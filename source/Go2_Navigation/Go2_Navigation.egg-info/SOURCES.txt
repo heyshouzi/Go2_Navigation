@@ -1,0 +1,10 @@
+pyproject.toml
+setup.py
+Go2_Navigation/__init__.py
+Go2_Navigation/ui_extension_example.py
+Go2_Navigation.egg-info/PKG-INFO
+Go2_Navigation.egg-info/SOURCES.txt
+Go2_Navigation.egg-info/dependency_links.txt
+Go2_Navigation.egg-info/not-zip-safe
+Go2_Navigation.egg-info/requires.txt
+Go2_Navigation.egg-info/top_level.txt

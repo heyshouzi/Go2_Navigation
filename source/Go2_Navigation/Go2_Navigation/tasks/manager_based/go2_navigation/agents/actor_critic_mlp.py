@@ -33,7 +33,7 @@ class ObstacleMLP(nn.Module):
         input_dim: int = 359,
         hidden_dims: list[int] = [256, 128, 64],
         output_dim: int = 36,
-        max_distance: float = 30.0,
+        max_distance: float = 8.0,
         dropout: float = 0.0,  # No dropout during RL training by default
     ):
         """
@@ -159,7 +159,7 @@ class ActorCriticWithLidarEncoder(nn.Module):
         lidar_input_dim: int = 359,
         lidar_output_dim: int = 36,
         lidar_hidden_dims: list[int] = [256, 128, 64],
-        lidar_max_distance: float = 30.0,
+        lidar_max_distance: float = 8.0,
         # Standard ActorCritic config
         actor_obs_normalization: bool = False,
         critic_obs_normalization: bool = False,

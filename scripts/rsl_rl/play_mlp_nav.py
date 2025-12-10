@@ -89,7 +89,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # 🔥 CRITICAL: Register custom ActorCritic class with rsl_rl
-from isaaclab_tasks.manager_based.navigation.config.go2.agents.actor_critic_mlp import ActorCriticWithLidarEncoder
+from Go2_Navigation.tasks.manager_based.go2_navigation.agents.actor_critic_mlp import ActorCriticWithLidarEncoder
 import rsl_rl.modules
 # Register the custom class
 setattr(rsl_rl.modules, 'ActorCriticWithLidarEncoder', ActorCriticWithLidarEncoder)

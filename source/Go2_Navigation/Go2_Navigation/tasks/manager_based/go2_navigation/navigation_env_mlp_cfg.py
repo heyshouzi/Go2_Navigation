@@ -19,10 +19,11 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
 from isaaclab.sensors import RayCasterCfg, patterns
-import isaaclab_tasks.manager_based.navigation.mdp as mdp
+from . import mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.config.go2.flat_env_cfg import UnitreeGo2FlatEnvCfg
 
 LOW_LEVEL_ENV_CFG = UnitreeGo2FlatEnvCfg()
+LOW_LEVEL_ENV_CFG.observations.policy.base_lin_vel = None
 
 
 @configclass
@@ -52,7 +53,7 @@ class ActionsCfg:
 
     pre_trained_policy_action: mdp.PreTrainedPolicyActionCfg = mdp.PreTrainedPolicyActionCfg(
         asset_name="robot",
-        policy_path=f"/home/wu/IsaacLab/logs/rsl_rl/unitree_go2_flat/2025-10-02_14-33-48/exported/policy.pt",
+        policy_path=f"/home/wl/Go2_Navigation/policy.pt",
         low_level_decimation=4,
         low_level_actions=LOW_LEVEL_ENV_CFG.actions.joint_pos,
         low_level_observations=LOW_LEVEL_ENV_CFG.observations.policy,
@@ -92,9 +93,6 @@ class ObservationsCfg:
         # 2. Angular velocity (base_lin_vel removed from actor for robustness)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         
-        # 3. Last action (上次采取的动作)
-        last_action = ObsTerm(func=mdp.last_action)
-        
         # 4. 🆕 RAW 360° LiDAR data (will be encoded by policy network)
         obstacle_features = ObsTerm(
             func=mdp.obstacle_mlp_encoding,
@@ -128,8 +126,6 @@ class ObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         
-        # 3. Last action (上次采取的动作)
-        last_action = ObsTerm(func=mdp.last_action)
         
         # 4. 🆕 RAW 360° LiDAR data
         obstacle_features = ObsTerm(
@@ -232,7 +228,7 @@ class CommandsCfg:
     pose_command = mdp.UniformPose2dCommandCfg(
         asset_name="robot",
         simple_heading=False,
-        resampling_time_range=(20.0, 20.0),
+        resampling_time_range=(10.0, 10.0),
         debug_vis=True,
         ranges=mdp.UniformPose2dCommandCfg.Ranges(
             pos_x=(-7.0, 7.0),
@@ -340,7 +336,7 @@ class NavigationEnvMLPCfg(ManagerBasedRLEnvCfg):
         # 比如decimation为10时，每10个物理仿真步才采集一次RL观测并做一次动作决策、奖励计算等。
         # 这样可以减小外层RL决策的频率，提高仿真效率，模拟真实机器人控制周期远慢于仿真步；
         # 这里乘以10表示每10个低层决策周期才进行一次高层RL环境步。
-        self.decimation = LOW_LEVEL_ENV_CFG.decimation * 4        
+        self.decimation = LOW_LEVEL_ENV_CFG.decimation * 2       
         self.episode_length_s = self.commands.pose_command.resampling_time_range[1]
 
         if self.scene.height_scanner is not None:

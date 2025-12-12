@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 from typing import TYPE_CHECKING
-
+import isaaclab.utils.math as math_utils
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import RayCaster
 
@@ -90,46 +90,4 @@ def obstacle_mlp_encoding(
         print(f"[LiDAR] {distance.shape[1]} rays → distance only, maxD={max_d}")
 
     return distance
-
-def last_action(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """获取上次采取的动作。
-    
-    这个函数返回上一个时间步采取的动作。对于episode的第一步，返回零动作。
-    动作维度为3：[vx, vy, vyaw]
-    
-    注意：动作存储由 PreTrainedPolicyAction.process_actions 负责更新。
-    
-    Args:
-        env: The environment.
-        
-    Returns:
-        上次的动作。Shape: (num_envs, 3).
-    """
-    # 存储键
-    storage_key = "last_action"
-    
-    # 获取动作维度（从动作管理器）
-    action_term = env.action_manager.terms.get("pre_trained_policy_action")
-    if action_term is None:
-        # 如果找不到动作项，返回零动作
-        return torch.zeros(env.num_envs, 3, device=env.device)
-    
-    action_dim = action_term.action_dim
-    
-    # 检查episode重置：如果reset标志存在，清除历史
-    if hasattr(env, 'episode_length_buf'):
-        # episode_length_buf=0 表示刚刚重置
-        reset_mask = env.episode_length_buf == 0
-        if reset_mask.any():
-            if storage_key in env.extras:
-                # 重置对应环境的历史动作为零
-                env.extras[storage_key][reset_mask] = 0.0
-    
-    # 初始化：如果是第一次调用，返回零动作
-    if storage_key not in env.extras:
-        env.extras[storage_key] = torch.zeros(env.num_envs, action_dim, device=env.device)
-        return torch.zeros(env.num_envs, action_dim, device=env.device)  # 第一步没有历史，返回0
-    
-    # 获取上次的动作
-    return env.extras[storage_key].clone()
 

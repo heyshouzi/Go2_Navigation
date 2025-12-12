@@ -88,24 +88,6 @@ class PreTrainedPolicyAction(ActionTerm):
     """
 
     def process_actions(self, actions: torch.Tensor):
-        # 在更新动作之前，将当前动作存储为"上次动作"（用于下次观测）
-        storage_key = "last_action"
-        
-        # 初始化存储（如果不存在）
-        if storage_key not in self.env.extras:
-            self.env.extras[storage_key] = torch.zeros_like(self._raw_actions)
-        
-        # 检查episode重置：如果reset标志存在，清除历史
-        if hasattr(self.env, 'episode_length_buf'):
-            reset_mask = self.env.episode_length_buf == 0
-            if reset_mask.any():
-                # 重置对应环境的历史动作为零
-                self.env.extras[storage_key][reset_mask] = 0.0
-        
-        # 将当前动作存储为"上次动作"（在更新之前）
-        # 注意：对于重置的环境，这会将零动作存储为"上次动作"，这是正确的
-        self.env.extras[storage_key] = self._raw_actions.clone()
-        
         # 🔧 限制速度命令范围，避免初始训练时速度过大导致失控
         # vx: [-1.0, 1.0] m/s (前后)
         # vy: [-0.8, 0.8] m/s (左右)

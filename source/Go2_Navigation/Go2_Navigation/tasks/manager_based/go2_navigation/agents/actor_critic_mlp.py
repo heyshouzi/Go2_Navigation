@@ -114,35 +114,21 @@ class ActorCriticWithLidarEncoder(nn.Module):
     
     🆕 Designed for Unitree Go2 with 360-degree LiDAR (Unitree L1)
     
-    This network expects observations with different structures for actor and critic:
-    
-    Actor (policy) observations:
+    This network expects observations with the following structure:
     - pose_command: (batch, 4)
+    - base_lin_vel: (batch, 3)
     - base_ang_vel: (batch, 3)
-    - last_action: (batch, 3)  ← Last action taken
-    - obstacle_features: (batch, 359)  ← Raw 360° LiDAR data (359 rays)!
-    Note: base_lin_vel is NOT used by actor for improved robustness.
-    
-    Critic observations:
-    - pose_command: (batch, 4)
-    - base_lin_vel: (batch, 3)  ← Only for critic!
-    - base_ang_vel: (batch, 3)
-    - last_action: (batch, 3)  ← Last action taken
     - obstacle_features: (batch, 359)  ← Raw 360° LiDAR data (359 rays)!
     
     The raw LiDAR data is encoded by an integrated ObstacleMLP before
     being concatenated with other observations.
     
     Architecture:
-        Actor Input → [Split] → Basic features (10: pose+ang_vel+last_action, NO lin_vel)
-                             → LiDAR raw (359) → ObstacleMLP → Encoded (36)
-                    → [Concat] → Combined (46)
-                    → Actor MLP → Actions (3)
-        
-        Critic Input → [Split] → Basic features (13: pose+lin_vel+ang_vel+last_action)
-                              → LiDAR raw (359) → ObstacleMLP → Encoded (36)
-                     → [Concat] → Combined (49)
-                     → Critic MLP → Value (1)
+        Input → [Split] → Basic features (10)
+                       → LiDAR raw (359) → ObstacleMLP → Encoded (36)
+              → [Concat] → Combined (46)
+              → Actor MLP → Actions (3)
+              → Critic MLP → Value (1)
     
     ✅ Sim2Real: Identical sensor in simulation and real robot!
     Note: 359 rays cover 360° (0° to 358°), excluding 359° which equals 0°.
@@ -199,65 +185,64 @@ class ActorCriticWithLidarEncoder(nn.Module):
         
         self.obs_groups = obs_groups
         
-        # Calculate observation dimensions for actor (policy) and critic separately
-        # Actor: pose_command(4) + base_ang_vel(3) + lidar(N) = 7 + N
-        # Critic: pose_command(4) + base_lin_vel(3) + base_ang_vel(3) + lidar(N) = 10 + N
+        # Check if there's a separate critic observation group
+        has_critic_group = "critic" in obs_groups and len(obs_groups["critic"]) > 0
         
-        # Actor observations
-        total_actor_obs_dim = 0
+        # Calculate Actor observation dimensions
+        actor_obs_dim = 0
         for obs_group in obs_groups["policy"]:
             obs_shape = obs[obs_group].shape
             assert len(obs_shape) == 2, "Only 1D observations supported."
-            total_actor_obs_dim += obs_shape[-1]
+            actor_obs_dim += obs_shape[-1]
         
-        # Critic observations
-        total_critic_obs_dim = 0
-        for obs_group in obs_groups["critic"]:
-            obs_shape = obs[obs_group].shape
-            assert len(obs_shape) == 2, "Only 1D observations supported."
-            total_critic_obs_dim += obs_shape[-1]
+        # Calculate Critic observation dimensions
+        if has_critic_group:
+            critic_obs_dim = 0
+            for obs_group in obs_groups["critic"]:
+                obs_shape = obs[obs_group].shape
+                assert len(obs_shape) == 2, "Only 1D observations supported."
+                critic_obs_dim += obs_shape[-1]
+        else:
+            critic_obs_dim = actor_obs_dim  # Fallback to actor observations if no critic group
         
-        # Known structure from environment config
-        # Actor: pose(4) + ang_vel(3) + last_action(3) = 10 basic obs
-        num_actor_basic_obs = 10  # 4 (pose) + 3 (ang_vel) + 3 (last_action), NO base_lin_vel
-        num_actor_lidar_obs = total_actor_obs_dim - num_actor_basic_obs
+        # Parse observation structure
+        # Actor: pose(4) + ang_vel(3) + lidar(N) = 7 + lidar
+        # Critic: pose(4) + lin_vel(3) + ang_vel(3) + lidar(N) = 10 + lidar
+        actor_num_basic_obs = 7  # 4 (pose) + 3 (ang_vel)
+        actor_num_lidar_obs = actor_obs_dim - actor_num_basic_obs
         
-        # Critic: pose(4) + lin_vel(3) + ang_vel(3) + last_action(3) = 13 basic obs
-        num_critic_basic_obs = 13  # 4 (pose) + 3 (lin_vel) + 3 (ang_vel) + 3 (last_action)
-        num_critic_lidar_obs = total_critic_obs_dim - num_critic_basic_obs
+        if has_critic_group:
+            critic_num_basic_obs = 10  # 4 (pose) + 3 (lin_vel) + 3 (ang_vel)
+            critic_num_lidar_obs = critic_obs_dim - critic_num_basic_obs
+        else:
+            critic_num_basic_obs = actor_num_basic_obs
+            critic_num_lidar_obs = actor_num_lidar_obs
         
-        lidar_obs_key = "lidar"  # Internal identifier
+        print(f"📊 Actor observation structure: {actor_obs_dim} total dims")
+        print(f"   - Basic observations: {actor_num_basic_obs} dims (pose + ang_vel)")
+        print(f"   - LiDAR rays: {actor_num_lidar_obs} dims")
         
-        print(f"📊 Actor observation structure: {total_actor_obs_dim} total dims")
-        print(f"   - Basic observations: {num_actor_basic_obs} dims (pose + ang_vel + last_action, NO lin_vel)")
-        print(f"   - LiDAR rays: {num_actor_lidar_obs} dims")
-        
-        print(f"📊 Critic observation structure: {total_critic_obs_dim} total dims")
-        print(f"   - Basic observations: {num_critic_basic_obs} dims (pose + lin_vel + ang_vel + last_action)")
-        print(f"   - LiDAR rays: {num_critic_lidar_obs} dims")
+        if has_critic_group:
+            print(f"📊 Critic observation structure: {critic_obs_dim} total dims")
+            print(f"   - Basic observations: {critic_num_basic_obs} dims (pose + lin_vel + ang_vel)")
+            print(f"   - LiDAR rays: {critic_num_lidar_obs} dims")
         
         # Validate LiDAR detection
-        if num_actor_lidar_obs == 0 or num_critic_lidar_obs == 0:
+        if actor_num_lidar_obs == 0:
             raise ValueError(
-                "No LiDAR observation detected! Expected a high-dimensional observation "
-                f"(>100 dims). Actor: {obs_groups['policy']}, Critic: {obs_groups['critic']}"
+                "No LiDAR observation detected in actor observations! "
+                f"Got observations: {obs_groups['policy']}"
             )
         
-        # Validate that actor and critic have the same LiDAR dimensions
-        if num_actor_lidar_obs != num_critic_lidar_obs:
-            raise ValueError(
-                f"Actor and critic must have the same LiDAR dimensions! "
-                f"Actor: {num_actor_lidar_obs}, Critic: {num_critic_lidar_obs}"
-            )
+        if actor_num_lidar_obs != lidar_input_dim:
+            print(f"⚠️  Warning: Expected {lidar_input_dim} LiDAR rays, got {actor_num_lidar_obs}")
+            lidar_input_dim = actor_num_lidar_obs
         
-        if num_actor_lidar_obs != lidar_input_dim:
-            print(f"⚠️  Warning: Expected {lidar_input_dim} LiDAR rays, got {num_actor_lidar_obs}")
-            lidar_input_dim = num_actor_lidar_obs
-        
-        self.lidar_obs_key = lidar_obs_key
-        self.num_actor_basic_obs = num_actor_basic_obs
-        self.num_critic_basic_obs = num_critic_basic_obs
-        self.num_lidar_obs = num_actor_lidar_obs
+        self.has_critic_group = has_critic_group
+        self.actor_num_basic_obs = actor_num_basic_obs
+        self.actor_num_lidar_obs = actor_num_lidar_obs
+        self.critic_num_basic_obs = critic_num_basic_obs
+        self.critic_num_lidar_obs = critic_num_lidar_obs
         
         # === LiDAR Encoder ===
         self.lidar_encoder = ObstacleMLP(
@@ -272,8 +257,8 @@ class ActorCriticWithLidarEncoder(nn.Module):
         print(f"   Parameters: {sum(p.numel() for p in self.lidar_encoder.parameters())}")
         
         # === Actor Network ===
-        # Actor input: basic observations (NO base_lin_vel) + encoded LiDAR features
-        num_actor_obs = num_actor_basic_obs + lidar_output_dim
+        # Actor input: basic observations + encoded LiDAR features
+        num_actor_obs = actor_num_basic_obs + lidar_output_dim
         self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
         
         # Actor observation normalization
@@ -284,12 +269,11 @@ class ActorCriticWithLidarEncoder(nn.Module):
             self.actor_obs_normalizer = torch.nn.Identity()
         
         print(f"✅ Actor MLP: {num_actor_obs} → {num_actions}")
-        print(f"   (Basic: {num_actor_basic_obs} + LiDAR: {lidar_output_dim} = {num_actor_obs})")
-        print(f"   Note: Actor includes last_action but does NOT use base_lin_vel")
+        print(f"   (Basic: {actor_num_basic_obs} + LiDAR: {lidar_output_dim} = {num_actor_obs})")
         
         # === Critic Network ===
-        # Critic uses additional observations (including base_lin_vel) + encoded LiDAR
-        num_critic_obs = num_critic_basic_obs + lidar_output_dim
+        # Critic uses different observations if critic group is available
+        num_critic_obs = critic_num_basic_obs + lidar_output_dim
         
         print(f"🔧 DEBUG: Creating Critic with input dim = {num_critic_obs}")
         print(f"🔧 DEBUG: Critic hidden dims = {critic_hidden_dims}")
@@ -304,8 +288,8 @@ class ActorCriticWithLidarEncoder(nn.Module):
             self.critic_obs_normalizer = torch.nn.Identity()
         
         print(f"✅ Critic MLP: {num_critic_obs} → 1")
-        print(f"   (Basic: {num_critic_basic_obs} + LiDAR: {lidar_output_dim} = {num_critic_obs})")
-        print(f"   Note: Critic includes base_lin_vel and last_action for better value estimation")
+        if has_critic_group:
+            print(f"   (Basic: {critic_num_basic_obs} + LiDAR: {lidar_output_dim} = {num_critic_obs})")
         
         # === Action Noise ===
         self.noise_std_type = noise_std_type
@@ -347,25 +331,28 @@ class ActorCriticWithLidarEncoder(nn.Module):
         Process observations: encode LiDAR and concatenate with basic obs.
         
         Args:
-            observations: Dict of observations (with 'policy' or 'critic' key)
+            observations: Dict of observations (with 'policy' and optionally 'critic' keys)
             is_actor: Whether processing for actor (vs critic)
         
         Returns:
             Concatenated observation tensor with LiDAR encoded
         """
-        # Get the concatenated observation tensor from the appropriate group
         if is_actor:
+            # Actor uses 'policy' group
             obs_tensor = observations["policy"]
-            num_basic_obs = self.num_actor_basic_obs
+            basic_obs = obs_tensor[:, :self.actor_num_basic_obs]  # First 7 dims (pose + ang_vel)
+            lidar_obs = obs_tensor[:, self.actor_num_basic_obs:]  # Remaining dims (LiDAR)
         else:
-            obs_tensor = observations["critic"]
-            num_basic_obs = self.num_critic_basic_obs
-        
-        # Split into basic obs and LiDAR
-        # Actor: [pose(4), ang_vel(3), last_action(3), lidar(N)]
-        # Critic: [pose(4), lin_vel(3), ang_vel(3), last_action(3), lidar(N)]
-        basic_obs = obs_tensor[:, :num_basic_obs]
-        lidar_obs = obs_tensor[:, num_basic_obs:]  # Remaining dims (LiDAR)
+            # Critic uses 'critic' group if available, otherwise 'policy'
+            if self.has_critic_group and "critic" in observations:
+                obs_tensor = observations["critic"]
+                basic_obs = obs_tensor[:, :self.critic_num_basic_obs]  # First 10 dims (pose + lin_vel + ang_vel)
+                lidar_obs = obs_tensor[:, self.critic_num_basic_obs:]  # Remaining dims (LiDAR)
+            else:
+                # Fallback to policy observations
+                obs_tensor = observations["policy"]
+                basic_obs = obs_tensor[:, :self.actor_num_basic_obs]
+                lidar_obs = obs_tensor[:, self.actor_num_basic_obs:]
         
         # Encode LiDAR
         encoded_lidar = self.lidar_encoder(lidar_obs)
@@ -390,9 +377,13 @@ class ActorCriticWithLidarEncoder(nn.Module):
     @property
     def std(self):
         if self.noise_std_type == "log":
-            return torch.exp(self.log_std)
+            # Use exp to get std from log_std, and clamp to ensure positive values
+            # Also handle potential inf/nan values
+            std = torch.exp(self.log_std)
+            return torch.clamp(std, min=1e-6, max=1e6)
         else:
-            return self._std
+            # Ensure std is always non-negative (clamp to prevent negative values)
+            return torch.clamp(self._std, min=1e-6)
     
     @std.setter
     def std(self, std):

@@ -233,8 +233,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # 🆕 路径可视化：记录和可视化go2走过的路线
     from collections import defaultdict
-    import omni.isaac.core.utils.prims as prim_utils
-    from pxr import UsdGeom, Gf
+    from pxr import UsdGeom, Gf, Usd
     import omni.usd
     
     # 存储每个环境的路径点
@@ -243,45 +242,62 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # 获取USD stage
     stage = omni.usd.get_context().get_stage()
     
+    def is_prim_path_valid(prim_path: str) -> bool:
+        """检查prim路径是否有效"""
+        prim = stage.GetPrimAtPath(prim_path)
+        return prim.IsValid()
+    
+    def delete_prim(prim_path: str):
+        """删除USD prim"""
+        prim = stage.GetPrimAtPath(prim_path)
+        if prim.IsValid():
+            stage.RemovePrim(prim_path)
+    
     def update_path_visualization(env_idx: int, points: list):
-        """更新路径可视化"""
+        """更新路径可视化 - 使用线条段绘制（更可靠）"""
         if len(points) < 2:
             return
         
-        prim_path = f"/World/PathVisualization/env_{env_idx}"
+        # 使用线条段（Line segments）绘制路径，每两个点之间一条线
+        parent_path = f"/World/PathVisualization/env_{env_idx}"
         
-        # 如果prim不存在，创建它
-        if not prim_utils.is_prim_path_valid(prim_path):
-            # 创建父路径
-            parent_path = "/World/PathVisualization"
-            if not prim_utils.is_prim_path_valid(parent_path):
-                prim_utils.create_prim(parent_path, "Xform")
+        # 如果父路径不存在，创建它
+        if not is_prim_path_valid(parent_path):
+            parent_prim = stage.DefinePrim(parent_path, "Xform")
+        else:
+            parent_prim = stage.GetPrimAtPath(parent_path)
+        
+        # 删除旧的线条段
+        for child in parent_prim.GetChildren():
+            if child.GetName().startswith("line_"):
+                stage.RemovePrim(child.GetPath())
+        
+        # 创建新的线条段（每两个点之间一条线）
+        for i in range(len(points) - 1):
+            line_path = f"{parent_path}/line_{i}"
+            line_prim = UsdGeom.BasisCurves.Define(stage, line_path)
             
-            # 创建线条prim
-            line_prim_path = prim_path
-            line_prim = UsdGeom.BasisCurves.Define(stage, line_prim_path)
+            # 设置两个端点
+            p1 = Gf.Vec3f(float(points[i][0]), float(points[i][1]), float(points[i][2]))
+            p2 = Gf.Vec3f(float(points[i+1][0]), float(points[i+1][1]), float(points[i+1][2]))
+            
+            # 设置曲线点
+            line_prim.GetPointsAttr().Set([p1, p2])
+            
+            # 设置曲线类型
+            line_prim.GetBasisAttr().Set(UsdGeom.Tokens.linear)
+            line_prim.GetTypeAttr().Set(UsdGeom.Tokens.linear)
+            
+            # 设置曲线顶点数（一条线有2个点）
+            line_prim.GetCurveVertexCountsAttr().Set([2])
             
             # 设置颜色为绿色
             color_attr = line_prim.CreateDisplayColorAttr()
             color_attr.Set([Gf.Vec3f(0.0, 1.0, 0.0)])
             
-            # 设置宽度
+            # 设置宽度（增加宽度以便更容易看到）
             widths_attr = line_prim.CreateWidthsAttr()
-            widths_attr.Set([0.02])
-        else:
-            line_prim = UsdGeom.BasisCurves.Get(stage, prim_path)
-        
-        # 转换为Gf.Vec3f数组
-        points_gf = [Gf.Vec3f(float(p[0]), float(p[1]), float(p[2])) for p in points]
-        
-        # 设置曲线点
-        line_prim.GetPointsAttr().Set(points_gf)
-        # 设置曲线类型为线性
-        line_prim.GetBasisAttr().Set(UsdGeom.Tokens.linear)
-        line_prim.GetTypeAttr().Set(UsdGeom.Tokens.linear)
-        # 设置曲线顶点数（一条连续的线）
-        vertex_counts = [len(points)]
-        line_prim.GetCurveVertexCountsAttr().Set(vertex_counts)
+            widths_attr.Set([0.05])
     
     # 获取机器人资产
     robot = env.unwrapped.scene["robot"]
@@ -290,8 +306,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs = env.get_observations()
     timestep = 0
     last_update_step = 0
-    update_interval = 10  # 每10步更新一次路径可视化（减少计算开销）
+    update_interval = 5  # 每5步更新一次路径可视化
     last_reset_buf = None  # 用于检测环境重置
+    path_record_interval = 2  # 每2步记录一次路径点（减少点数量，提高性能）
+    last_path_record_step = 0
     
     print("[INFO] 🎨 已启用路径可视化功能，将显示go2走过的路线（绿色线条）")
     
@@ -314,17 +332,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                                     path_points[env_idx] = []
                                 # 清除可视化
                                 prim_path = f"/World/PathVisualization/env_{env_idx}"
-                                if prim_utils.is_prim_path_valid(prim_path):
-                                    prim_utils.delete_prim(prim_path)
+                                if is_prim_path_valid(prim_path):
+                                    delete_prim(prim_path)
                 last_reset_buf = reset_buf.clone()
             
-            # 记录机器人位置
-            if robot.is_initialized:
+            # 记录机器人位置（定期记录以减少点数量，提高性能）
+            if robot.is_initialized and (timestep - last_path_record_step >= path_record_interval):
                 robot_positions = robot.data.root_pos_w.clone()  # (num_envs, 3)
                 # 为每个环境记录路径点
                 for env_idx in range(robot_positions.shape[0]):
                     pos = robot_positions[env_idx].cpu().numpy()
                     path_points[env_idx].append((float(pos[0]), float(pos[1]), float(pos[2])))
+                last_path_record_step = timestep
             
             # agent stepping
             actions = policy(obs)
@@ -338,10 +357,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         update_path_visualization(env_idx, points)
                 last_update_step = timestep
             
-        if args_cli.video:
+            # 🔧 修复：timestep必须在循环中更新，不依赖于video标志
             timestep += 1
+            
+        if args_cli.video:
             # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
+            if timestep >= args_cli.video_length:
                 break
 
         # time delay for real-time evaluation

@@ -71,5 +71,6 @@ tests/
 .isaac-lab-docker-history
 
 
-* Python
-__pycache__
+# Python
+__pycache__/
+*.pyc

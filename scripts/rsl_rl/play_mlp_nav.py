@@ -231,18 +231,113 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dt = env.unwrapped.step_dt
 
+    # 🆕 路径可视化：记录和可视化go2走过的路线
+    from collections import defaultdict
+    import omni.isaac.core.utils.prims as prim_utils
+    from pxr import UsdGeom, Gf
+    import omni.usd
+    
+    # 存储每个环境的路径点
+    path_points = defaultdict(list)  # {env_idx: [(x, y, z), ...]}
+    
+    # 获取USD stage
+    stage = omni.usd.get_context().get_stage()
+    
+    def update_path_visualization(env_idx: int, points: list):
+        """更新路径可视化"""
+        if len(points) < 2:
+            return
+        
+        prim_path = f"/World/PathVisualization/env_{env_idx}"
+        
+        # 如果prim不存在，创建它
+        if not prim_utils.is_prim_path_valid(prim_path):
+            # 创建父路径
+            parent_path = "/World/PathVisualization"
+            if not prim_utils.is_prim_path_valid(parent_path):
+                prim_utils.create_prim(parent_path, "Xform")
+            
+            # 创建线条prim
+            line_prim_path = prim_path
+            line_prim = UsdGeom.BasisCurves.Define(stage, line_prim_path)
+            
+            # 设置颜色为绿色
+            color_attr = line_prim.CreateDisplayColorAttr()
+            color_attr.Set([Gf.Vec3f(0.0, 1.0, 0.0)])
+            
+            # 设置宽度
+            widths_attr = line_prim.CreateWidthsAttr()
+            widths_attr.Set([0.02])
+        else:
+            line_prim = UsdGeom.BasisCurves.Get(stage, prim_path)
+        
+        # 转换为Gf.Vec3f数组
+        points_gf = [Gf.Vec3f(float(p[0]), float(p[1]), float(p[2])) for p in points]
+        
+        # 设置曲线点
+        line_prim.GetPointsAttr().Set(points_gf)
+        # 设置曲线类型为线性
+        line_prim.GetBasisAttr().Set(UsdGeom.Tokens.linear)
+        line_prim.GetTypeAttr().Set(UsdGeom.Tokens.linear)
+        # 设置曲线顶点数（一条连续的线）
+        vertex_counts = [len(points)]
+        line_prim.GetCurveVertexCountsAttr().Set(vertex_counts)
+    
+    # 获取机器人资产
+    robot = env.unwrapped.scene["robot"]
+    
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    last_update_step = 0
+    update_interval = 10  # 每10步更新一次路径可视化（减少计算开销）
+    last_reset_buf = None  # 用于检测环境重置
+    
+    print("[INFO] 🎨 已启用路径可视化功能，将显示go2走过的路线（绿色线条）")
+    
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
+            # 检测环境重置并清除对应环境的路径
+            if hasattr(env.unwrapped, 'episode_length_buf'):
+                reset_buf = env.unwrapped.episode_length_buf
+                if last_reset_buf is not None:
+                    # 检测哪些环境被重置了（episode_length_buf从非0变为0或1）
+                    reset_mask = (reset_buf <= 1) & (last_reset_buf > 1)
+                    if reset_mask.any():
+                        for env_idx in range(reset_mask.shape[0]):
+                            if reset_mask[env_idx]:
+                                # 清除该环境的路径点
+                                if env_idx in path_points:
+                                    path_points[env_idx] = []
+                                # 清除可视化
+                                prim_path = f"/World/PathVisualization/env_{env_idx}"
+                                if prim_utils.is_prim_path_valid(prim_path):
+                                    prim_utils.delete_prim(prim_path)
+                last_reset_buf = reset_buf.clone()
+            
+            # 记录机器人位置
+            if robot.is_initialized:
+                robot_positions = robot.data.root_pos_w.clone()  # (num_envs, 3)
+                # 为每个环境记录路径点
+                for env_idx in range(robot_positions.shape[0]):
+                    pos = robot_positions[env_idx].cpu().numpy()
+                    path_points[env_idx].append((float(pos[0]), float(pos[1]), float(pos[2])))
+            
             # agent stepping
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+            
+            # 定期更新路径可视化
+            if timestep - last_update_step >= update_interval:
+                for env_idx, points in path_points.items():
+                    if len(points) > 1:
+                        update_path_visualization(env_idx, points)
+                last_update_step = timestep
+            
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
@@ -253,6 +348,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
+    
+    # 最终更新一次路径可视化
+    print(f"[INFO] 路径可视化完成，共记录了 {len(path_points)} 个环境的路径")
+    for env_idx, points in path_points.items():
+        if len(points) > 1:
+            update_path_visualization(env_idx, points)
+            print(f"[INFO] 环境 {env_idx}: 记录了 {len(points)} 个路径点")
 
     # close the simulator
     env.close()

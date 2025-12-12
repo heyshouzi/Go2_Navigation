@@ -53,7 +53,8 @@ class ActionsCfg:
 
     pre_trained_policy_action: mdp.PreTrainedPolicyActionCfg = mdp.PreTrainedPolicyActionCfg(
         asset_name="robot",
-        policy_path=f"/home/wl/Go2_Navigation/policy.pt",
+        policy_path=f"/home/wu/IsaacLab/logs/rsl_rl/unitree_go2_flat/2025-10-02_14-33-48/exported/policy.pt",
+        # policy_path=f"/home/wu/Go2_Navigation/policy2.pt",
         low_level_decimation=4,
         low_level_actions=LOW_LEVEL_ENV_CFG.actions.joint_pos,
         low_level_observations=LOW_LEVEL_ENV_CFG.observations.policy,
@@ -398,18 +399,31 @@ class NavigationEnvMLPCfg(ManagerBasedRLEnvCfg):
             ),
         )
 
-
+from isaaclab.assets import AssetBaseCfg
+import isaaclab.sim as sim_utils
 class NavigationEnvMLPCfg_PLAY(NavigationEnvMLPCfg):
     def __post_init__(self) -> None:
         # post init of parent
         super().__post_init__()
 
         # make a smaller scene for play
-        self.scene.num_envs = 5
+        self.scene.num_envs = 2
         self.scene.env_spacing = 2.5
         # disable randomization for play
         self.observations.policy.enable_corruption = False
         self.scene.obstacle_scanner.debug_vis = True
+        self.episode_length_s = 20.0
         
         # 🎮 Play模式：测试全距离范围（3-10m）
         self.commands.pose_command.ranges.pos_y = (3.0, 10.0)
+        self.events.reset_base.params["pose_range"]["y"] = (-6.0, -6.0)
+        self.events.reset_base.params["pose_range"]["x"] = (-2.0, 2.0)
+
+        # ------------------------------------------------------
+        # 💡 添加光源 (IsaacLab 2.3)
+        # ------------------------------------------------------
+        self.scene.light = AssetBaseCfg(
+            prim_path="/World/light",
+            spawn=sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 500.0)),
+        )

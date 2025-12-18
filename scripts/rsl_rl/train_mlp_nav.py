@@ -28,21 +28,52 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Train navigation with MLP encoder (RSL-RL)")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
-parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
+parser = argparse.ArgumentParser(
+    description="Train navigation with MLP encoder (RSL-RL)"
+)
+parser.add_argument(
+    "--video", action="store_true", default=False, help="Record videos during training."
+)
+parser.add_argument(
+    "--video_length",
+    type=int,
+    default=200,
+    help="Length of the recorded video (in steps).",
+)
+parser.add_argument(
+    "--video_interval",
+    type=int,
+    default=2000,
+    help="Interval between video recordings (in steps).",
+)
+parser.add_argument(
+    "--num_envs", type=int, default=None, help="Number of environments to simulate."
+)
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument(
-    "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
+    "--agent",
+    type=str,
+    default="rsl_rl_cfg_entry_point",
+    help="Name of the RL agent configuration entry point.",
 )
-parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
-    "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
+    "--seed", type=int, default=None, help="Seed used for the environment"
 )
-parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+parser.add_argument(
+    "--max_iterations", type=int, default=None, help="RL Policy training iterations."
+)
+parser.add_argument(
+    "--distributed",
+    action="store_true",
+    default=False,
+    help="Run training with multiple GPUs or nodes.",
+)
+parser.add_argument(
+    "--export_io_descriptors",
+    action="store_true",
+    default=False,
+    help="Export IO descriptors.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -78,6 +109,7 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
+from isaaclab.utils.io import dump_yaml
 
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 
@@ -86,8 +118,11 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # 🔥 CRITICAL: Register custom ActorCritic class with rsl_rl
-from Go2_Navigation.tasks.manager_based.go2_navigation.agents.actor_critic_mlp import ActorCriticWithLidarEncoder
+from Go2_Navigation.tasks.manager_based.go2_navigation.agents.actor_critic_mlp import (
+    ActorCriticWithLidarEncoder,
+)
 import rsl_rl.modules
+
 rsl_rl.modules.ActorCriticWithLidarEncoder = ActorCriticWithLidarEncoder
 print("✅ Registered ActorCriticWithLidarEncoder with rsl_rl.modules")
 
@@ -98,19 +133,27 @@ torch.backends.cudnn.benchmark = False
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
+def main(
+    env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg,
+    agent_cfg: RslRlBaseRunnerCfg,
+):
     """Train with RSL-RL agent using custom MLP encoder."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
-    env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
-    agent_cfg.max_iterations = (
-        args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
+    env_cfg.scene.num_envs = (
+        args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     )
-
+    agent_cfg.max_iterations = (
+        args_cli.max_iterations
+        if args_cli.max_iterations is not None
+        else agent_cfg.max_iterations
+    )
 
     # set the environment seed
     env_cfg.seed = agent_cfg.seed
-    env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    env_cfg.sim.device = (
+        args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    )
 
     # multi-gpu training configuration
     if args_cli.distributed:
@@ -124,7 +167,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    
+
     # specify directory for logging runs
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     print(f"Exact experiment name requested from command line: {log_dir}")
@@ -136,13 +179,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):
         env_cfg.export_io_descriptors = args_cli.export_io_descriptors
     else:
-        omni.log.warn("IO descriptors are only supported for manager based RL environments.")
+        omni.log.warn(
+            "IO descriptors are only supported for manager based RL environments."
+        )
 
     # set the log directory for the environment
     env_cfg.log_dir = log_dir
 
     # create isaac environment
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    env = gym.make(
+        args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None
+    )
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -150,7 +197,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        resume_path = get_checkpoint_path(
+            log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
+        )
 
     # wrap for video recording
     if args_cli.video:
@@ -170,32 +219,44 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # 🔥 关键修复：确保 lidar_* 配置被传递到 policy
     # 将顶层的 lidar_* 配置合并到 policy 配置中
     config_dict = agent_cfg.to_dict()
-    
+
     # 如果 lidar_* 配置在顶层，将它们添加到 policy 配置中
-    if hasattr(agent_cfg, 'lidar_input_dim') and 'policy' in config_dict:
-        if 'lidar_input_dim' not in config_dict['policy']:
-            config_dict['policy']['lidar_input_dim'] = agent_cfg.lidar_input_dim
-        if 'lidar_output_dim' not in config_dict['policy']:
-            config_dict['policy']['lidar_output_dim'] = agent_cfg.lidar_output_dim
-        if 'lidar_hidden_dims' not in config_dict['policy']:
-            config_dict['policy']['lidar_hidden_dims'] = agent_cfg.lidar_hidden_dims
-        if 'lidar_max_distance' not in config_dict['policy']:
-            config_dict['policy']['lidar_max_distance'] = agent_cfg.lidar_max_distance
-        
+    if hasattr(agent_cfg, "lidar_input_dim") and "policy" in config_dict:
+        if "lidar_input_dim" not in config_dict["policy"]:
+            config_dict["policy"]["lidar_input_dim"] = agent_cfg.lidar_input_dim
+        if "lidar_output_dim" not in config_dict["policy"]:
+            config_dict["policy"]["lidar_output_dim"] = agent_cfg.lidar_output_dim
+        if "lidar_hidden_dims" not in config_dict["policy"]:
+            config_dict["policy"]["lidar_hidden_dims"] = agent_cfg.lidar_hidden_dims
+        if "lidar_max_distance" not in config_dict["policy"]:
+            config_dict["policy"]["lidar_max_distance"] = agent_cfg.lidar_max_distance
+
         print("🔧 DEBUG: Merged lidar_* configuration into policy config")
-        print(f"  policy.lidar_input_dim: {config_dict['policy'].get('lidar_input_dim', 'N/A')}")
-        print(f"  policy.lidar_output_dim: {config_dict['policy'].get('lidar_output_dim', 'N/A')}")
-        print(f"  policy.lidar_hidden_dims: {config_dict['policy'].get('lidar_hidden_dims', 'N/A')}")
-        print(f"  policy.lidar_max_distance: {config_dict['policy'].get('lidar_max_distance', 'N/A')}")
+        print(
+            f"  policy.lidar_input_dim: {config_dict['policy'].get('lidar_input_dim', 'N/A')}"
+        )
+        print(
+            f"  policy.lidar_output_dim: {config_dict['policy'].get('lidar_output_dim', 'N/A')}"
+        )
+        print(
+            f"  policy.lidar_hidden_dims: {config_dict['policy'].get('lidar_hidden_dims', 'N/A')}"
+        )
+        print(
+            f"  policy.lidar_max_distance: {config_dict['policy'].get('lidar_max_distance', 'N/A')}"
+        )
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, config_dict, log_dir=log_dir, device=agent_cfg.device)
+        runner = OnPolicyRunner(
+            env, config_dict, log_dir=log_dir, device=agent_cfg.device
+        )
     elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(env, config_dict, log_dir=log_dir, device=agent_cfg.device)
+        runner = DistillationRunner(
+            env, config_dict, log_dir=log_dir, device=agent_cfg.device
+        )
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    
+
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
 
@@ -204,9 +265,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         runner.load(resume_path)
 
+    # dump the configuration into log-directory
+    dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+    dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
     # run training
     print(f"🚀 Starting training with max_iterations = {agent_cfg.max_iterations}")
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    runner.learn(
+        num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True
+    )
 
     # close the simulator
     env.close()
@@ -217,4 +284,3 @@ if __name__ == "__main__":
     main()
     # close sim app
     simulation_app.close()
-

@@ -57,10 +57,25 @@ class PreTrainedPolicyAction(ActionTerm):
             return self.low_level_actions
 
         # remap some of the low level observations to internal observations
-        cfg.low_level_observations.actions.func = lambda dummy_env: last_action()
-        cfg.low_level_observations.actions.params = dict()
-        cfg.low_level_observations.velocity_commands.func = lambda dummy_env: self._raw_actions
-        cfg.low_level_observations.velocity_commands.params = dict()
+        # 新配置使用 last_action 而不是 actions
+        if hasattr(cfg.low_level_observations, 'actions'):
+            # 旧配置（isaaclab_tasks）使用 actions
+            cfg.low_level_observations.actions.func = lambda dummy_env: last_action()
+            cfg.low_level_observations.actions.params = dict()
+        elif hasattr(cfg.low_level_observations, 'last_action'):
+            # 新配置（unitree_rl_lab）使用 last_action
+            cfg.low_level_observations.last_action.func = lambda dummy_env: last_action()
+            cfg.low_level_observations.last_action.params = dict()
+        else:
+            raise AttributeError(
+                f"Low level observations must have either 'actions' or 'last_action' attribute. "
+                f"Available attributes: {dir(cfg.low_level_observations)}"
+            )
+        
+        # 更新 velocity_commands（两个配置都有这个）
+        if hasattr(cfg.low_level_observations, 'velocity_commands'):
+            cfg.low_level_observations.velocity_commands.func = lambda dummy_env: self._raw_actions
+            cfg.low_level_observations.velocity_commands.params = dict()
 
         # add the low level observations to the observation manager
         self._low_level_obs_manager = ObservationManager({"ll_policy": cfg.low_level_observations}, env)

@@ -11,26 +11,30 @@ the ObstacleMLP encoder for end-to-end training with proper gradient flow.
 """
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoAlgorithmCfg,
+)
 
 
 @configclass
 class NavigationEnvPPOMLPRunnerCfg(RslRlOnPolicyRunnerCfg):
     """
     PPO runner configuration for navigation with MLP obstacle encoder.
-    
+
     Key features:
     - Custom ActorCriticWithLidarEncoder network
     - End-to-end training: LiDAR encoder + policy
     - Proper gradient flow through all components
     """
-    
+
     num_steps_per_env = 24
     max_iterations = 30000
     save_interval = 500
     experiment_name = "unitree_go2_navigation_mlp"
     empirical_normalization = False
-    
+
     # Custom policy network with integrated LiDAR encoder
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
         class_name="rsl_rl.modules.ActorCriticWithLidarEncoder",
@@ -42,14 +46,14 @@ class NavigationEnvPPOMLPRunnerCfg(RslRlOnPolicyRunnerCfg):
         actor_obs_normalization=False,
         critic_obs_normalization=False,
     )
-    
+
     # LiDAR encoder configuration (passed as kwargs to ActorCritic __init__)
     # 🆕 360-degree LiDAR matching real Unitree Go2 hardware
     lidar_input_dim: int = -1  # Auto-detect from environment (359 rays for 360° scan)
     lidar_output_dim: int = 36  # Encoded feature dimension (359 → 36, more expressive)
     lidar_hidden_dims: list = [256, 128, 64]  # Hidden layers for LiDAR encoder
-    lidar_max_distance: float = 8.0 
-    
+    lidar_max_distance: float = 8.0
+
     # PPO algorithm configuration
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
@@ -65,4 +69,3 @@ class NavigationEnvPPOMLPRunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
-

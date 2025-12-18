@@ -55,7 +55,6 @@ class ObstacleMLP(nn.Module):
         # Build MLP layers
         layers = []
         prev_dim = input_dim
-        
         for i, hidden_dim in enumerate(hidden_dims):
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
@@ -116,8 +115,6 @@ class ActorCriticWithLidarEncoder(nn.Module):
     
     This network expects observations with the following structure:
     - pose_command: (batch, 4)
-    - base_lin_vel: (batch, 3)
-    - base_ang_vel: (batch, 3)
     - obstacle_features: (batch, 359)  ← Raw 360° LiDAR data (359 rays)!
     
     The raw LiDAR data is encoded by an integrated ObstacleMLP before
@@ -188,55 +185,65 @@ class ActorCriticWithLidarEncoder(nn.Module):
         # Check if there's a separate critic observation group
         has_critic_group = "critic" in obs_groups and len(obs_groups["critic"]) > 0
         
-        # Calculate Actor observation dimensions
-        actor_obs_dim = 0
-        for obs_group in obs_groups["policy"]:
-            obs_shape = obs[obs_group].shape
-            assert len(obs_shape) == 2, "Only 1D observations supported."
-            actor_obs_dim += obs_shape[-1]
+        # === 动态识别观察维度 ===
+        # observations["policy"] 和 observations["critic"] 是已经拼接好的张量
+        # obstacle_features 位于最后 lidar_input_dim 维
         
-        # Calculate Critic observation dimensions
+        # 处理 lidar_input_dim 为 -1 的情况（自动检测）
+        if lidar_input_dim == -1:
+            # 如果未指定，使用默认值 359（360° LiDAR，359 条射线）
+            lidar_input_dim = 359
+            print(f"⚠️  lidar_input_dim is -1, using default value: {lidar_input_dim}")
+        
+        # 获取 Actor 观察总维度
+        actor_obs_shape = obs["policy"].shape
+        assert len(actor_obs_shape) == 2, "Only 1D observations supported."
+        actor_obs_dim = actor_obs_shape[-1]
+        
+        # Actor: obstacle_features 位于最后 lidar_input_dim 维
+        # 使用 lidar_input_dim 参数，不硬编码
+        actor_num_lidar_obs = lidar_input_dim
+        actor_num_basic_obs = actor_obs_dim - actor_num_lidar_obs
+        
+        # 获取 Critic 观察总维度
         if has_critic_group:
-            critic_obs_dim = 0
-            for obs_group in obs_groups["critic"]:
-                obs_shape = obs[obs_group].shape
-                assert len(obs_shape) == 2, "Only 1D observations supported."
-                critic_obs_dim += obs_shape[-1]
+            critic_obs_shape = obs["critic"].shape
+            assert len(critic_obs_shape) == 2, "Only 1D observations supported."
+            critic_obs_dim = critic_obs_shape[-1]
+            
+            # Critic: obstacle_features 位于最后 lidar_input_dim 维（与 policy 相同）
+            critic_num_lidar_obs = lidar_input_dim
+            critic_num_basic_obs = critic_obs_dim - critic_num_lidar_obs
         else:
-            critic_obs_dim = actor_obs_dim  # Fallback to actor observations if no critic group
-        
-        # Parse observation structure
-        # Actor: pose(4) + ang_vel(3) + lidar(N) = 7 + lidar
-        # Critic: pose(4) + lin_vel(3) + ang_vel(3) + lidar(N) = 10 + lidar
-        actor_num_basic_obs = 7  # 4 (pose) + 3 (ang_vel)
-        actor_num_lidar_obs = actor_obs_dim - actor_num_basic_obs
-        
-        if has_critic_group:
-            critic_num_basic_obs = 10  # 4 (pose) + 3 (lin_vel) + 3 (ang_vel)
-            critic_num_lidar_obs = critic_obs_dim - critic_num_basic_obs
-        else:
+            critic_obs_dim = actor_obs_dim
             critic_num_basic_obs = actor_num_basic_obs
             critic_num_lidar_obs = actor_num_lidar_obs
         
+        # 验证维度合理性
+        if actor_num_basic_obs < 0:
+            raise ValueError(
+                f"Actor observation dimension ({actor_obs_dim}) is less than LiDAR dimension ({lidar_input_dim})!"
+            )
+        
+        if has_critic_group and critic_num_basic_obs < 0:
+            raise ValueError(
+                f"Critic observation dimension ({critic_obs_dim}) is less than LiDAR dimension ({lidar_input_dim})!"
+            )
+        
         print(f"📊 Actor observation structure: {actor_obs_dim} total dims")
-        print(f"   - Basic observations: {actor_num_basic_obs} dims (pose + ang_vel)")
-        print(f"   - LiDAR rays: {actor_num_lidar_obs} dims")
+        print(f"   - Basic observations: {actor_num_basic_obs} dims")
+        print(f"   - LiDAR rays (obstacle_features): {actor_num_lidar_obs} dims (last {lidar_input_dim} dims)")
         
         if has_critic_group:
             print(f"📊 Critic observation structure: {critic_obs_dim} total dims")
-            print(f"   - Basic observations: {critic_num_basic_obs} dims (pose + lin_vel + ang_vel)")
-            print(f"   - LiDAR rays: {critic_num_lidar_obs} dims")
+            print(f"   - Basic observations: {critic_num_basic_obs} dims")
+            print(f"   - LiDAR rays (obstacle_features): {critic_num_lidar_obs} dims (last {lidar_input_dim} dims)")
         
         # Validate LiDAR detection
         if actor_num_lidar_obs == 0:
             raise ValueError(
-                "No LiDAR observation detected in actor observations! "
-                f"Got observations: {obs_groups['policy']}"
+                f"No LiDAR observation detected! Actor obs dim: {actor_obs_dim}, lidar_input_dim: {lidar_input_dim}"
             )
-        
-        if actor_num_lidar_obs != lidar_input_dim:
-            print(f"⚠️  Warning: Expected {lidar_input_dim} LiDAR rays, got {actor_num_lidar_obs}")
-            lidar_input_dim = actor_num_lidar_obs
         
         self.has_critic_group = has_critic_group
         self.actor_num_basic_obs = actor_num_basic_obs
@@ -330,8 +337,14 @@ class ActorCriticWithLidarEncoder(nn.Module):
         """
         Process observations: encode LiDAR and concatenate with basic obs.
         
+        Actor 和 Critic 共享同一个 LiDAR encoder，输出 36 维特征。
+        
+        obstacle_features 位于 observations 的最后 lidar_input_dim 维（从参数获取，不硬编码）。
+        
         Args:
             observations: Dict of observations (with 'policy' and optionally 'critic' keys)
+                          observations["policy"] 和 observations["critic"] 是已经拼接好的张量
+                          obstacle_features 位于最后 lidar_input_dim 维
             is_actor: Whether processing for actor (vs critic)
         
         Returns:
@@ -339,25 +352,34 @@ class ActorCriticWithLidarEncoder(nn.Module):
         """
         if is_actor:
             # Actor uses 'policy' group
-            obs_tensor = observations["policy"]
-            basic_obs = obs_tensor[:, :self.actor_num_basic_obs]  # First 7 dims (pose + ang_vel)
-            lidar_obs = obs_tensor[:, self.actor_num_basic_obs:]  # Remaining dims (LiDAR)
+            obs_tensor = observations["policy"]  # Shape: (batch, actor_obs_dim)
+            
+            # obstacle_features 位于最后 lidar_input_dim 维
+            # 基本观察：除了最后 lidar_input_dim 维之外的所有观察
+            basic_obs = obs_tensor[:, :-self.actor_num_lidar_obs]
+            # LiDAR 观察：最后 lidar_input_dim 维
+            lidar_obs = obs_tensor[:, -self.actor_num_lidar_obs:]
         else:
             # Critic uses 'critic' group if available, otherwise 'policy'
             if self.has_critic_group and "critic" in observations:
-                obs_tensor = observations["critic"]
-                basic_obs = obs_tensor[:, :self.critic_num_basic_obs]  # First 10 dims (pose + lin_vel + ang_vel)
-                lidar_obs = obs_tensor[:, self.critic_num_basic_obs:]  # Remaining dims (LiDAR)
+                obs_tensor = observations["critic"]  # Shape: (batch, critic_obs_dim)
+                
+                # obstacle_features 位于最后 lidar_input_dim 维（与 policy 相同）
+                # 基本观察：除了最后 lidar_input_dim 维之外的所有观察
+                basic_obs = obs_tensor[:, :-self.critic_num_lidar_obs]
+                # LiDAR 观察：最后 lidar_input_dim 维
+                lidar_obs = obs_tensor[:, -self.critic_num_lidar_obs:]
             else:
                 # Fallback to policy observations
                 obs_tensor = observations["policy"]
-                basic_obs = obs_tensor[:, :self.actor_num_basic_obs]
-                lidar_obs = obs_tensor[:, self.actor_num_basic_obs:]
+                basic_obs = obs_tensor[:, :-self.actor_num_lidar_obs]
+                lidar_obs = obs_tensor[:, -self.actor_num_lidar_obs:]
         
-        # Encode LiDAR
+        # 使用共享的 LiDAR encoder 编码 LiDAR 数据（输出 36 维）
+        # Actor 和 Critic 共享同一个 encoder，确保特征一致性
         encoded_lidar = self.lidar_encoder(lidar_obs)
         
-        # Concatenate: basic obs + encoded LiDAR
+        # 拼接: basic obs + encoded LiDAR (36 dims)
         combined_obs = torch.cat([basic_obs, encoded_lidar], dim=-1)
         
         return combined_obs

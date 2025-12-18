@@ -262,7 +262,7 @@ def main(
     print(f"[INFO] Exporting models to: {export_model_dir}")
 
     # 🆕 Use custom export function for MLP encoder (with LiDAR perception)
-    from isaaclab_tasks.manager_based.navigation.config.go2.export_mlp_policy import (
+    from Go2_Navigation.tasks.manager_based.go2_navigation.agents.export_mlp_policy import (
         export_mlp_policy_as_jit,
     )
 

@@ -259,6 +259,7 @@ def velocity_smoothness_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
     注意：
         这个函数需要环境存储上一帧的速度。
         如果是第一步（没有历史），返回0（无违规）。
+        在episode重置时会自动清除历史速度。
     """
     robot = env.scene["robot"]
     current_vel = robot.data.root_lin_vel_b[:, :2]  # 当前线速度 (x, y)
@@ -268,6 +269,14 @@ def velocity_smoothness_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
         # 第一步，初始化历史速度
         env._last_lin_vel = current_vel.clone()
         return torch.zeros(env.num_envs, device=env.device)
+
+    # 🔧 检查episode重置：如果reset标志存在，清除历史
+    if hasattr(env, "episode_length_buf"):
+        # episode_length_buf=0 表示刚刚重置
+        reset_mask = env.episode_length_buf == 0
+        if reset_mask.any():
+            # 重置时，将历史速度设置为当前速度（避免第一步产生大的速度变化）
+            env._last_lin_vel[reset_mask] = current_vel[reset_mask].clone()
 
     # 计算速度变化（加速度的近似）
     vel_change = current_vel - env._last_lin_vel
@@ -597,8 +606,55 @@ def contact_force_penalty(
     # 获取接触力传感器
     contact_sensor = env.scene.sensors[sensor_cfg.name]
 
+    # 🔧 缓存body_ids的键（基于传感器名称和body_names）
+    cache_key = f"_contact_force_body_ids_{sensor_cfg.name}"
+    
+    # 🔧 从 body_names 获取 body_ids（如果 body_ids 不存在）
+    if not hasattr(env, cache_key) or getattr(env, cache_key) is None:
+        if hasattr(sensor_cfg, "body_ids") and sensor_cfg.body_ids is not None:
+            body_ids = sensor_cfg.body_ids
+            # 如果是list，转换为tensor
+            if isinstance(body_ids, (list, tuple)):
+                body_ids = torch.tensor(body_ids, device=env.device, dtype=torch.long)
+        elif hasattr(sensor_cfg, "body_names") and sensor_cfg.body_names is not None:
+            # 从 body_names 转换为 body_ids
+            body_names = sensor_cfg.body_names
+            # 如果 body_names 是字符串，转换为列表
+            if isinstance(body_names, str):
+                body_names = [body_names]
+            
+            # 获取传感器对应的asset（通常是robot）
+            # 尝试从传感器配置中获取asset名称，或使用默认的"robot"
+            asset_name = getattr(sensor_cfg, "asset_name", "robot")
+            asset = env.scene[asset_name]
+            
+            # 从asset的body名称映射中获取body_ids
+            body_ids_list = []
+            for body_name in body_names:
+                if body_name in asset.body_names:
+                    body_ids_list.append(asset.body_names.index(body_name))
+                else:
+                    raise ValueError(
+                        f"Body name '{body_name}' not found in asset '{asset_name}'. "
+                        f"Available bodies: {asset.body_names}"
+                    )
+            body_ids = torch.tensor(body_ids_list, device=env.device, dtype=torch.long)
+        else:
+            # 如果没有指定body_names或body_ids，使用所有body
+            body_ids = torch.arange(
+                contact_sensor.data.net_forces_w.shape[1], 
+                device=env.device, 
+                dtype=torch.long
+            )
+        
+        # 缓存body_ids
+        setattr(env, cache_key, body_ids)
+    else:
+        # 使用缓存的body_ids
+        body_ids = getattr(env, cache_key)
+
     # 获取指定部位的接触力 (num_envs, num_bodies, 3)
-    contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids]
+    contact_forces = contact_sensor.data.net_forces_w[:, body_ids]
 
     # 计算接触力的模（大小）
     force_magnitudes = torch.norm(contact_forces, dim=-1)  # (num_envs, num_bodies)

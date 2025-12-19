@@ -170,7 +170,7 @@ def export_mlp_policy_as_jit(
         policy: ActorCriticWithLidarEncoder instance
         normalizer: Optional normalizer
         path: Export directory
-        filename: Export filename (can be .pt or .pth)
+        filename: Export filename (should be .pt)
     """
     print("=" * 60)
     print("🚀 Exporting MLP Navigation Policy (with LiDAR encoder)")
@@ -200,15 +200,6 @@ def export_mlp_policy_as_jit(
     scripted_policy.save(export_path)
 
     print(f"✅ Policy exported to: {export_path}")
-    
-    # Also save as .pth format (full model, not just state_dict)
-    base_name = os.path.splitext(filename)[0]
-    pth_path = os.path.join(path, f"{base_name}.pt")
-    torch.save(deployment_policy, pth_path)
-    print(f"✅ Policy also saved as .pth to: {pth_path}")
-
-
-
 
 
 
@@ -254,7 +245,7 @@ def export_mlp_policy_as_jit(
         except Exception as load_error:
             print(f"⚠️  Warning: Could not load TorchScript model for testing: {load_error}")
             print("   This may be due to TorchScript compatibility issues, but the model file was saved successfully.")
-            print("   You can try loading it later or use the .pth format instead.")
+            print("   You can try loading it later.")
             
     except Exception as test_error:
         print(f"⚠️  Warning: Export test failed: {test_error}")

@@ -58,8 +58,9 @@ class ActionsCfg:
     pre_trained_policy_action: mdp.PreTrainedPolicyActionCfg = (
         mdp.PreTrainedPolicyActionCfg(
             asset_name="robot",
-            policy_path=f"/home/wu/IsaacLab/logs/rsl_rl/unitree_go2_flat/2025-10-02_14-33-48/exported/policy.pt",
-            # policy_path=f"/home/wu/Go2_Navigation/unitree_lab_policy.pt",git
+            # policy_path=f"/home/wu/IsaacLab/logs/rsl_rl/unitree_go2_flat/2025-10-02_14-33-48/exported/policy.pt",
+            policy_path=f"/home/wl/Go2_Navigation/motion_checkpoint/policy.pt",
+            # policy_path=f"/home/wu/Go2_Navigation/unitree_lab_policy.pt",
             low_level_decimation=4,
             # low_level_actions=LOW_LEVEL_ENV_CFG.actions.JointPositionAction,  # 使用新配置中的 action 名称
             low_level_actions=LOW_LEVEL_ENV_CFG.actions.joint_pos,
@@ -80,8 +81,7 @@ class ObservationsCfg:
 
         Observation structure:
         - pose_command (4): [x, y, z, heading] target pose in base frame
-        - base_ang_vel (3): [wx, wy, wz] angular velocity
-        - last_action (3): [vx, vy, vyaw] 上次采取的动作
+        - projected_gravity (3): [gx, gy, gz] projected gravity
         - obstacle_features (359): 🆕 RAW 360° lidar ranges (NOT encoded here!)
           * 359 rays, one per degree (0° = forward, 90° = left, 180° = back, 270° = right)
           * Range: 0-30m (matching Unitree L1 LiDAR specs)
@@ -90,7 +90,6 @@ class ObservationsCfg:
 
         ⚠️ Total input to actor: 369 dims (4+3+3+359)
         ⚠️ After policy's internal encoding: 4 + 3 + 3 + 36 = 46 dims
-
         ✅ Sim2Real: Identical to real Go2 LiDAR! No resampling needed in deployment.
         Note: base_lin_vel is removed from actor to improve robustness.
         """
@@ -99,9 +98,7 @@ class ObservationsCfg:
         pose_command = ObsTerm(
             func=mdp.generated_commands, params={"command_name": "pose_command"}
         )
-
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
-
         # 4. 🆕 RAW 360° LiDAR data (will be encoded by policy network)
         obstacle_features = ObsTerm(
             func=mdp.obstacle_mlp_encoding,
@@ -163,7 +160,7 @@ class RewardsCfg:
     # 🆕 运动过程中的碰撞惩罚（持续监测）- 课程学习从-1开始
     contact_force_penalty = RewTerm(
         func=mdp.contact_force_penalty,
-        weight=-20.0,  # 🎓 课程学习：从轻惩罚开始，逐步增加到-5.0
+        weight=-5.0,  # 🎓 课程学习：从轻惩罚开始，逐步增加到-5.0
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -181,23 +178,23 @@ class RewardsCfg:
         },
     )
 
-    # 🆕 障碍物接近惩罚（预防性）
-    obstacle_proximity_penalty = RewTerm(
-        func=mdp.obstacle_proximity_penalty,
-        weight=-1.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("obstacle_scanner"),
-            "danger_distance": 0.2,
-            "warning_distance": 0.5,
-        },
-    )
+    # # 🆕 障碍物接近惩罚（预防性）
+    # obstacle_proximity_penalty = RewTerm(
+    #     func=mdp.obstacle_proximity_penalty,
+    #     weight=-1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("obstacle_scanner"),
+    #         "danger_distance": 0.2,
+    #         "warning_distance": 0.5,
+    #     },
+    # )
 
-    # Timeout penalty
-    timeout_penalty = RewTerm(
-        func=mdp.is_terminated_term,
-        weight=-1.0,
-        params={"term_keys": ["time_out"]},
-    )
+    # Timeout penalty 没有起作用
+    # timeout_penalty = RewTerm(
+    #     func=mdp.is_terminated_term,
+    #     weight=-1.0,
+    #     params={"term_keys": ["time_out"]},
+    # )
 
     # Position tracking (coarse-grained)
     position_tracking = RewTerm(
@@ -222,7 +219,7 @@ class RewardsCfg:
     # Goal reached bonus
     goal_reached_bonus = RewTerm(
         func=mdp.goal_reached_bonus_time_aware,
-        weight=10.0,
+        weight=20.0,
         params={
             "command_name": "pose_command",
             "distance_threshold": 0.3,

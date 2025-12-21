@@ -385,6 +385,8 @@ class NavigationController:
         use_lidar: bool = True,
         lidar_topic: str = "/lidar_projected",
         max_lidar_distance: float = 8.0,  # 与训练配置一致 (navigation_env_mlp_cfg.py: max_distance=8.0)
+        lidar_angle_offset_deg: int = 0,
+        lidar_reverse: bool = False,
     ):
         self.device = torch.device(device)
         
@@ -405,6 +407,12 @@ class NavigationController:
         self.initial_position: Optional[Tuple[float, float, float]] = None
         self.last_position_update = time.time()
         self.max_lidar_distance = max_lidar_distance
+        # LiDAR index semantics:
+        # Training (RayCaster + LidarPatternCfg) uses 359 rays for angles [0..358] degrees.
+        # In real deployment, /lidar_projected must match this indexing. If not, use the
+        # optional offset/reverse to align (after you validate with a real obstacle).
+        self.lidar_angle_offset_deg = int(lidar_angle_offset_deg)
+        self.lidar_reverse = bool(lidar_reverse)
         
         print(f"📊 Observation structure: 366 dims (matches training config)")
         print(f"   - pose_command: 4 dims [x, y, z, heading]")
@@ -499,8 +507,9 @@ class NavigationController:
         Returns:
             重力投影向量 [gx, gy, gz]，形状 (3,)
         """
-        # 重力在世界坐标系中（标准重力加速度，单位 m/s²）
-        gravity_w = np.array([0.0, 0.0, -9.81], dtype=np.float32)
+        # 训练侧常用的是“单位重力方向向量”（而不是 m/s² 的 9.81），即 [0, 0, -1]，
+        # 这样 projected_gravity 的范围稳定在 [-1, 1]，更适合作为网络输入。
+        gravity_w = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         
         # 四元数 (w, x, y, z)
         qw, qx, qy, qz = state.quat_w, state.quat_x, state.quat_y, state.quat_z
@@ -594,6 +603,14 @@ class NavigationController:
             # Clip to valid range and ensure finite values
             lidar_data = np.clip(lidar_data, 0.0, self.max_lidar_distance)
             lidar_data = np.nan_to_num(lidar_data, nan=self.max_lidar_distance, posinf=self.max_lidar_distance, neginf=0.0)
+
+            # Optional alignment (only if you have validated /lidar_projected indexing)
+            if self.lidar_reverse:
+                lidar_data = lidar_data[::-1].copy()
+            if self.lidar_angle_offset_deg != 0:
+                # Positive offset rotates indices so that "new[0]" comes from "old[offset]".
+                # This is useful when the publisher uses a different 0-degree reference.
+                lidar_data = np.roll(lidar_data, -self.lidar_angle_offset_deg)
             
             return lidar_data.astype(np.float32)
         else:
@@ -761,6 +778,17 @@ def main():
         default=8.0,  # 与训练配置一致 (navigation_env_mlp_cfg.py: max_distance=8.0)
         help="Maximum lidar distance (meters)",
     )
+    parser.add_argument(
+        "--lidar-angle-offset-deg",
+        type=int,
+        default=0,
+        help="Optional LiDAR index offset (degrees). Positive means new[0]=old[offset].",
+    )
+    parser.add_argument(
+        "--lidar-reverse",
+        action="store_true",
+        help="Optional LiDAR index reversal (use only after validating /lidar_projected semantics).",
+    )
     
     args = parser.parse_args()
     
@@ -781,6 +809,8 @@ def main():
         use_lidar=not args.no_lidar,
         lidar_topic=args.lidar_topic,
         max_lidar_distance=args.max_lidar_distance,
+        lidar_angle_offset_deg=args.lidar_angle_offset_deg,
+        lidar_reverse=args.lidar_reverse,
     )
     
     try:

@@ -26,13 +26,15 @@ class ObstacleMLP(nn.Module):
     
     This encoder processes raw lidar ranges and outputs compact features.
     It's integrated into the ActorCritic network for end-to-end training.
+    
+    Network structure: 1024 -> 512 -> 512 -> 360
     """
     
     def __init__(
         self,
-        input_dim: int = 359,
-        hidden_dims: list[int] = [256, 128, 64],
-        output_dim: int = 36,
+        input_dim: int = 1024,
+        hidden_dims: list[int] = [512, 512],
+        output_dim: int = 360,
         max_distance: float = 8.0,
         dropout: float = 0.0,  # No dropout during RL training by default
     ):
@@ -40,9 +42,9 @@ class ObstacleMLP(nn.Module):
         Initialize the MLP encoder.
         
         Args:
-            input_dim: Number of input lidar points (359 for 360° scan, excluding overlap at 0°=360°)
-            hidden_dims: List of hidden layer dimensions
-            output_dim: Output feature dimension
+            input_dim: Number of input lidar points (default 1024 for LidarSensorCfg)
+            hidden_dims: List of hidden layer dimensions (default [512, 512])
+            output_dim: Output feature dimension (default 360)
             max_distance: Maximum lidar range for normalization
             dropout: Dropout probability (usually 0 for RL)
         """
@@ -52,7 +54,7 @@ class ObstacleMLP(nn.Module):
         self.output_dim = output_dim
         self.max_distance = max_distance
         
-        # Build MLP layers
+        # Build MLP layers: 1024 -> 512 -> 512 -> 360
         layers = []
         prev_dim = input_dim
         for i, hidden_dim in enumerate(hidden_dims):
@@ -109,26 +111,25 @@ class ObstacleMLP(nn.Module):
 
 class ActorCriticWithLidarEncoder(nn.Module):
     """
-    Actor-Critic network with integrated 360° LiDAR MLP encoder.
+    Actor-Critic network with integrated LiDAR MLP encoder.
     
-    🆕 Designed for Unitree Go2 with 360-degree LiDAR (Unitree L1)
+    🆕 Designed for Unitree Go2 with LidarSensorCfg
     
     This network expects observations with the following structure:
     - pose_command: (batch, 4)
-    - obstacle_features: (batch, 359)  ← Raw 360° LiDAR data (359 rays)!
+    - obstacle_features: (batch, 1024)  ← Raw LiDAR data from LidarSensorCfg
     
     The raw LiDAR data is encoded by an integrated ObstacleMLP before
     being concatenated with other observations.
     
     Architecture:
-        Input → [Split] → Basic features (10)
-                       → LiDAR raw (359) → ObstacleMLP → Encoded (36)
-              → [Concat] → Combined (46)
+        Input → [Split] → Basic features
+                       → LiDAR raw (1024) → ObstacleMLP (1024->512->512->360) → Encoded (360)
+              → [Concat] → Combined
               → Actor MLP → Actions (3)
               → Critic MLP → Value (1)
     
-    ✅ Sim2Real: Identical sensor in simulation and real robot!
-    Note: 359 rays cover 360° (0° to 358°), excluding 359° which equals 0°.
+    ✅ Sim2Real: Compatible with LidarSensorCfg sensor!
     """
     
     is_recurrent = False
@@ -139,9 +140,9 @@ class ActorCriticWithLidarEncoder(nn.Module):
         obs_groups,
         num_actions,
         # LiDAR encoder config
-        lidar_input_dim: int = 359,
-        lidar_output_dim: int = 36,
-        lidar_hidden_dims: list[int] = [256, 128, 64],
+        lidar_input_dim: int = 8000,
+        lidar_output_dim: int = 360,
+        lidar_hidden_dims: list[int] = [512, 512],
         lidar_max_distance: float = 8.0,
         # Standard ActorCritic config
         actor_obs_normalization: bool = False,
@@ -192,7 +193,7 @@ class ActorCriticWithLidarEncoder(nn.Module):
         # 处理 lidar_input_dim 为 -1 的情况（自动检测）
         if lidar_input_dim == -1:
             # 如果未指定，使用默认值 359（360° LiDAR，359 条射线）
-            lidar_input_dim = 359
+            lidar_input_dim = 8000
             print(f"⚠️  lidar_input_dim is -1, using default value: {lidar_input_dim}")
         
         # 获取 Actor 观察总维度
@@ -450,9 +451,7 @@ class ActorCriticWithLidarEncoder(nn.Module):
     def evaluate(self, observations, **kwargs):
         """Evaluate state value using critic."""
         # Process observations (encode LiDAR)
-        processed_obs = self._process_observations(observations, is_actor=False)
-        
-        # Normalize if needed
+        processed_obs = self._process_observations(observations, is_actor=False)腐
         processed_obs = self.critic_obs_normalizer(processed_obs)
         
         # Get value estimate

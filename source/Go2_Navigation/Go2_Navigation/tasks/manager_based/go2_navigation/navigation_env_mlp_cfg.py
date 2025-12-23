@@ -4,7 +4,8 @@ Navigation environment configuration with MLP-based obstacle encoding.
 This configuration uses a learnable MLP encoder to process raw lidar data,
 instead of hand-crafted sector features.
 """
-
+from isaaclab.sensors import LidarSensorCfg
+from isaaclab.sensors.ray_caster.patterns import LivoxPatternCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -360,23 +361,42 @@ class NavigationEnvMLPCfg(ManagerBasedRLEnvCfg):
             self.scene.contact_forces.update_period = self.sim.dt
 
         # RayCaster sensor for obstacle detection
-        self.scene.obstacle_scanner = RayCasterCfg(
+        # self.scene.obstacle_scanner = RayCasterCfg(
+        #     prim_path="{ENV_REGEX_NS}/Robot/base",
+        #     offset=RayCasterCfg.OffsetCfg(
+        #         pos=(0.0, 0.0, 0.1)
+        #     ),  # LiDAR安装位置（机身顶部）
+        #     ray_alignment="yaw",
+        #     pattern_cfg=patterns.LidarPatternCfg(
+        #         channels=1,  # 单线LiDAR
+        #         vertical_fov_range=(0.0, 0.0),  # 单线：垂直FOV为0
+        #         horizontal_fov_range=(0.0, 360.0),  # 360度水平扫描
+        #         horizontal_res=1.0,  # 每度1条射线
+        #         # 注意：360度扫描会排除最后一个点（360°与0°重复）
+        #         # 实际生成 359 条射线：[0°, 1°, 2°, ..., 358°]
+        #     ),
+        #     max_distance=8.0,
+        #     drift_range=(-0.0, 0.0),
+        #     debug_vis=False,  # 训练时关闭可视化以提高速度
+        #     mesh_prim_paths=["/World/ground"],
+        # )
+        # Realistic Livox sensor with .npy patterns
+        self.scene.obstacle_scanner = LidarSensorCfg(
             prim_path="{ENV_REGEX_NS}/Robot/base",
-            offset=RayCasterCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.1)
-            ),  # LiDAR安装位置（机身顶部）
-            ray_alignment="yaw",
-            pattern_cfg=patterns.LidarPatternCfg(
-                channels=1,  # 单线LiDAR
-                vertical_fov_range=(0.0, 0.0),  # 单线：垂直FOV为0
-                horizontal_fov_range=(0.0, 360.0),  # 360度水平扫描
-                horizontal_res=1.0,  # 每度1条射线
-                # 注意：360度扫描会排除最后一个点（360°与0°重复）
-                # 实际生成 359 条射线：[0°, 1°, 2°, ..., 358°]
+            pattern_cfg=LivoxPatternCfg(
+                sensor_type="mid360",
+                use_simple_grid=False,  # Use realistic patterns
+                samples=8000,
+                downsample=1,
             ),
+            offset=RayCasterCfg.OffsetCfg(
+                 pos=(0.0, 0.0, 0.1)
+             ), 
             max_distance=8.0,
-            drift_range=(-0.0, 0.0),
-            debug_vis=False,  # 训练时关闭可视化以提高速度
+            min_range=0.1,
+            return_pointcloud=True,
+            enable_sensor_noise=True,
+            random_distance_noise=0.02,
             mesh_prim_paths=["/World/ground"],
         )
 

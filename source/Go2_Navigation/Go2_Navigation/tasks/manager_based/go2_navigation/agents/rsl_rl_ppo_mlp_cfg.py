@@ -49,9 +49,9 @@ class NavigationEnvPPOMLPRunnerCfg(RslRlOnPolicyRunnerCfg):
 
     # LiDAR encoder configuration (passed as kwargs to ActorCritic __init__)
     # 🆕 360-degree LiDAR matching real Unitree Go2 hardware
-    lidar_input_dim: int = 359  # Auto-detect from environment (359 rays for 360° scan)
-    lidar_output_dim: int = 36  # Encoded feature dimension (359 → 36, more expressive)
-    lidar_hidden_dims: list = [256, 128, 64]  # Hidden layers for LiDAR encoder
+    lidar_input_dim: int = 8000  # Auto-detect from environment (359 rays for 360° scan)
+    lidar_output_dim: int = 360  # Encoded feature dimension (359 → 36, more expressive)
+    lidar_hidden_dims: list = [1024, 512, 512]  # Hidden layers for LiDAR encoder
     lidar_max_distance: float = 8.0
 
     # PPO algorithm configuration

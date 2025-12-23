@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>livox_filter_projector</name>
+  <version>0.0.1</version>
+  <description>Livox point cloud filtering node</description>
+
+  <maintainer email="you@example.com">Your Name</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+</package>

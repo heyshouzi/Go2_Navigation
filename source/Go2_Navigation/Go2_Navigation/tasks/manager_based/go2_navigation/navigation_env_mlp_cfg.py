@@ -413,7 +413,7 @@ class NavigationEnvMLPCfg(ManagerBasedRLEnvCfg):
                         horizontal_scale=0.1,
                         vertical_scale=0.1,
                         border_width=0.0,
-                        num_obstacles=140,
+                        num_obstacles=70,
                         obstacle_height_mode="fixed",
                         obstacle_width_range=(0.4, 0.8),
                         obstacle_height_range=(0.3, 1.0),
@@ -434,7 +434,7 @@ class NavigationEnvMLPCfg_PLAY(NavigationEnvMLPCfg):
         super().__post_init__()
 
         # make a smaller scene for play
-        self.scene.num_envs = 50
+        self.scene.num_envs = 1
         self.scene.env_spacing = 2.5
         # disable randomization for play
         self.observations.policy.enable_corruption = False
@@ -442,7 +442,8 @@ class NavigationEnvMLPCfg_PLAY(NavigationEnvMLPCfg):
         self.episode_length_s = 15.0
         # 🎮 Play模式：测试全距离范围（3-10m）
         self.commands.pose_command.resampling_time_range = (15.0, 15.0)
-        self.commands.pose_command.ranges.pos_y = (3.0, 10.0)
+        self.commands.pose_command.ranges.pos_x = (-2.0, -2.0)
+        self.commands.pose_command.ranges.pos_y = (7.0, 7.0)
         # self.events.reset_base.params["pose_range"]["y"] = (-6.0, -6.0)
         # self.events.reset_base.params["pose_range"]["x"] = (-2.0, 2.0)
 

@@ -201,11 +201,6 @@ def export_mlp_policy_as_jit(
 
     print(f"✅ Policy exported to: {export_path}")
     
-    # Also save as .pth format (full model, not just state_dict)
-    base_name = os.path.splitext(filename)[0]
-    pth_path = os.path.join(path, f"{base_name}.pt")
-    torch.save(deployment_policy, pth_path)
-    print(f"✅ Policy also saved as .pth to: {pth_path}")
 
 
 

@@ -1,0 +1,8 @@
+<launch>
+    <!-- 直接启动节点，无命名空间 -->
+    <node
+        pkg="livox_filter_projector"
+        type="livox_filter_projector"
+        name="livox_filter_projector"
+        output="screen" />
+</launch>

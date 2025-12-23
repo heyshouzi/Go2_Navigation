@@ -31,8 +31,6 @@ def obstacle_mlp_encoding(
         sensor_cfg: 传感器配置
         encoder_output_dim: 编码器输出维度
 
-    Returns:
-        距离张量，形状为 (num_envs, num_rays)
     """
     sensor: RayCaster = env.scene.sensors[sensor_cfg.name]
 

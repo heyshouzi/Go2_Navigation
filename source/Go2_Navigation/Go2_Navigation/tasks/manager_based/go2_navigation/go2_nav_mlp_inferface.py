@@ -29,6 +29,12 @@ Author: AI Assistant
 Date: 2025-01-XX
 """
 
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Odometry
+import tf.transformations as tft
+import tf2_ros
+
+
+
 import torch
 import numpy as np
 import time
@@ -131,19 +137,65 @@ class UnitreeGo2Interface:
         self.last_imu_time = time.time()
         self.initial_quat = None
         
-        if not SDK_AVAILABLE:
-            print("⚠️  Running in simulation mode (no SDK)")
-            return
+        # ROS定位系统相关
+        self.localization_position = np.array([0.0, 0.0, 0.0])  # 从AMCL/odometry获取的位置 [x, y, yaw]
+        self.localization_lock = threading.Lock()  # 定位数据锁
+        self.use_localization = True  # 是否使用ROS定位系统
+        self.map_frame = "map"  # 地图坐标系名称
+        self.base_frame = "base_link"  # 机器人本体坐标系名称
         
-        # Initialize SDK (no network_interface parameter - uses auto-detect)
-        print("🔧 Initializing Unitree SDK2")
-        ChannelFactoryInitialize(0)
-        
-        # Initialize SportClient
-        print("🔧 Setting up SportClient...")
-        self.sport_client = SportClient()
-        self.sport_client.SetTimeout(10.0)
-        self.sport_client.Init()
+        # 初始化ROS节点（如果还没有初始化）
+        if ROS_AVAILABLE:
+            if not rospy.core.is_initialized():
+                rospy.init_node("go2_nav_mlp_simplified", anonymous=True, disable_signals=True)
+            
+            # 初始化tf2监听器
+            try:
+                self.tf_buffer = tf2_ros.Buffer()
+                self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+                print("✅ TF2 listener initialized")
+            except Exception as e:
+                print(f"⚠️  Warning: TF2 listener initialization failed: {e}")
+                self.tf_buffer = None
+                self.tf_listener = None
+            
+            # 订阅RViz 2D Nav Goal
+            self.current_goal = None
+            self.goal_lock = threading.Lock()
+            self.goal_sub = rospy.Subscriber(
+                "/move_base_simple/goal",
+                PoseStamped,
+                self._rviz_goal_callback,
+                queue_size=1
+            )
+            print("✅ Subscribed to RViz 2D Nav Goal (/move_base_simple/goal)")
+            
+            # 订阅AMCL定位结果（优先使用）
+            try:
+                self.amcl_sub = rospy.Subscriber(
+                    "/amcl_pose",
+                    PoseWithCovarianceStamped,
+                    self._amcl_pose_callback,
+                    queue_size=1
+                )
+                print("✅ Subscribed to AMCL pose (/amcl_pose)")
+            except Exception as e:
+                print(f"⚠️  Warning: AMCL subscription failed: {e}")
+                self.amcl_sub = None
+            
+            # 订阅odometry作为备选（如果AMCL不可用）
+            try:
+                self.odom_sub = rospy.Subscriber(
+                    "/odom",
+                    Odometry,
+                    self._odom_callback,
+                    queue_size=1
+                )
+                print("✅ Subscribed to odometry (/odom)")
+            except Exception as e:
+                print(f"⚠️  Warning: Odometry subscription failed: {e}")
+                self.odom_sub = None
+
         
         # Initialize sensor data subscribers
         print("🔧 Setting up sensor data subscribers...")
@@ -180,6 +232,90 @@ class UnitreeGo2Interface:
         
         print("✅ SportClient and sensors initialized successfully")
 
+    def _rviz_goal_callback(self, msg: PoseStamped):
+        """Callback for RViz 2D Nav Goal."""
+        try:
+            q = msg.pose.orientation
+            _, _, yaw = tft.euler_from_quaternion([q.w, q.x, q.y, q.z])
+            
+            goal = NavigationGoal(
+                x=msg.pose.position.x,
+                y=msg.pose.position.y,
+                yaw=yaw
+            )
+            
+            with self.goal_lock:
+                self.current_goal = goal
+            
+            print("\n🎯 New RViz Goal Received")
+            print(f"   Map frame: x={goal.x:.2f}, y={goal.y:.2f}, yaw={np.degrees(yaw):.1f}°")
+        except Exception as e:
+            print(f"⚠️  Error processing RViz goal: {e}")
+    
+    def _amcl_pose_callback(self, msg: PoseWithCovarianceStamped):
+        """Callback for AMCL pose (激光定位)."""
+        try:
+            pose = msg.pose.pose
+            q = pose.orientation
+            _, _, yaw = tft.euler_from_quaternion([q.w, q.x, q.y, q.z])
+            
+            with self.localization_lock:
+                self.localization_position[0] = pose.position.x
+                self.localization_position[1] = pose.position.y
+                self.localization_position[2] = yaw
+            
+        except Exception as e:
+            print(f"⚠️  Error processing AMCL pose: {e}")
+    
+    def _odom_callback(self, msg: Odometry):
+        """Callback for odometry (作为AMCL的备选)."""
+        try:
+            # 只有在AMCL不可用时才使用odometry
+            if hasattr(self, 'amcl_sub') and self.amcl_sub is not None:
+                return  # AMCL可用，不使用odometry
+            
+            pose = msg.pose.pose
+            q = pose.orientation
+            _, _, yaw = tft.euler_from_quaternion([q.w, q.x, q.y, q.z])
+            
+            with self.localization_lock:
+                self.localization_position[0] = pose.position.x
+                self.localization_position[1] = pose.position.y
+                self.localization_position[2] = yaw
+            
+        except Exception as e:
+            print(f"⚠️  Error processing odometry: {e}")
+    
+    def _get_robot_pose_from_tf(self) -> Optional[np.ndarray]:
+        """通过TF获取机器人在地图坐标系中的位置 [x, y, yaw]."""
+        if not ROS_AVAILABLE or self.tf_buffer is None:
+            return None
+        
+        try:
+            # 尝试获取从map到base_link的变换
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame,
+                self.base_frame,
+                rospy.Time(0),
+                timeout=rospy.Duration(0.1)
+            )
+            
+            # 提取位置
+            x = transform.transform.translation.x
+            y = transform.transform.translation.y
+            
+            # 提取姿态（四元数转欧拉角）
+            q = transform.transform.rotation
+            _, _, yaw = tft.euler_from_quaternion([q.w, q.x, q.y, q.z])
+            
+            return np.array([x, y, yaw])
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+            # TF查找失败，返回None
+            return None
+        except Exception as e:
+            print(f"⚠️  Error getting robot pose from TF: {e}")
+            return None
+    
     def _low_state_handler(self, msg):
         """Callback for low state messages."""
         self.low_state_msg = msg
@@ -288,16 +424,35 @@ class UnitreeGo2Interface:
         return angle
     
     def get_fused_position(self):
-        """Get the fused position estimate [x, y, yaw]."""
-        if not SDK_AVAILABLE:
-            return np.array([0.0, 0.0, 0.0])
+        """
+        获取融合后的位置估计 [x, y, yaw]。
+        优先级：ROS定位系统（AMCL/odometry/TF） > SDK odometry > 默认值
+        """
+        # 优先使用ROS定位系统（AMCL/odometry）
+        if self.use_localization and ROS_AVAILABLE:
+            # 首先尝试从TF获取（最可靠）
+            tf_pose = self._get_robot_pose_from_tf()
+            if tf_pose is not None:
+                with self.localization_lock:
+                    self.localization_position = tf_pose
+                return tf_pose.copy()
+            
+            # 如果TF不可用，使用AMCL/odometry回调的数据
+            with self.localization_lock:
+                if np.any(self.localization_position != 0.0) or np.any(np.abs(self.localization_position) > 1e-6):
+                    return self.localization_position.copy()
         
-        if hasattr(self, 'sport_state_msg') and self.sport_state_msg is not None:
-            sport_state = self.sport_state_msg
-            yaw = self._get_yaw_from_quat(self.state)
-            return np.array([sport_state.position[0], sport_state.position[1], yaw])
+        # 备选：使用SDK的odometry数据
+        if SDK_AVAILABLE:
+            if hasattr(self, 'sport_state_msg') and self.sport_state_msg is not None:
+                sport_state = self.sport_state_msg
+                yaw = self._get_yaw_from_quat(self.state)
+                return np.array([sport_state.position[0], sport_state.position[1], yaw])
+            
+            return np.array([self.state.pos_x, self.state.pos_y, self._get_yaw_from_quat(self.state)])
         
-        return np.array([self.state.pos_x, self.state.pos_y, self._get_yaw_from_quat(self.state)])
+        # 默认值
+        return np.array([0.0, 0.0, 0.0])
     
     def start(self):
         """Start the interface."""
@@ -455,33 +610,48 @@ class NavigationController:
         return yaw
     
     def _compute_relative_goal(self, state: RobotState) -> np.ndarray:
-        """Compute goal position relative to robot base frame."""
-        if self.current_goal is None:
+        """
+        计算目标位置相对于机器人本体坐标系的pose_command。
+        
+        使用ROS定位系统（AMCL/odometry/TF）获取机器人在地图坐标系中的位置，
+        然后计算目标点相对于机器人本体的位置和朝向。
+        """
+        # 优先从robot接口获取rviz goal，如果没有则使用self.current_goal
+        goal = None
+        if hasattr(self.robot, 'current_goal') and self.robot.current_goal is not None:
+            with self.robot.goal_lock:
+                goal = self.robot.current_goal
+        elif self.current_goal is not None:
+            goal = self.current_goal
+        
+        if goal is None:
             return np.zeros(3, dtype=np.float32)
         
-        # Goal in world frame
-        goal_x_w = self.current_goal.x
-        goal_y_w = self.current_goal.y
-        goal_yaw_w = self.current_goal.yaw
+        # Goal在地图坐标系中的位置（从rviz获取）
+        goal_x_w = goal.x
+        goal_y_w = goal.y
+        goal_yaw_w = goal.yaw
         
-        # Robot position in world frame
+        # 机器人在地图坐标系中的位置（从ROS定位系统获取：AMCL/odometry/TF）
         fused_pos = self.robot.get_fused_position()
         robot_x_w = fused_pos[0]
         robot_y_w = fused_pos[1]
         robot_yaw_w = fused_pos[2]
         
-        # Delta in world frame
+        # 在世界坐标系中的差值
         delta_x_w = goal_x_w - robot_x_w
         delta_y_w = goal_y_w - robot_y_w
         
-        # Rotate to base frame
+        # 旋转到机器人本体坐标系
+        # 旋转矩阵：从世界坐标系到本体坐标系
         cos_yaw = np.cos(robot_yaw_w)
         sin_yaw = np.sin(robot_yaw_w)
         
+        # 将世界坐标系的差值转换到本体坐标系
         delta_x_b = cos_yaw * delta_x_w + sin_yaw * delta_y_w
         delta_y_b = -sin_yaw * delta_x_w + cos_yaw * delta_y_w
         
-        # Delta yaw
+        # 目标朝向相对于机器人当前朝向的差值
         delta_yaw = self._normalize_angle(goal_yaw_w - robot_yaw_w)
         
         return np.array([delta_x_b, delta_y_b, delta_yaw], dtype=np.float32)
@@ -698,7 +868,15 @@ class NavigationController:
     
     def check_goal_reached(self, threshold: float = 0.3) -> bool:
         """Check if goal is reached."""
-        if self.current_goal is None:
+        # 检查是否有goal（从rviz或手动设置）
+        goal = None
+        if hasattr(self.robot, 'current_goal') and self.robot.current_goal is not None:
+            with self.robot.goal_lock:
+                goal = self.robot.current_goal
+        elif self.current_goal is not None:
+            goal = self.current_goal
+        
+        if goal is None:
             return False
         
         state = self.robot.get_state()
@@ -715,20 +893,36 @@ class NavigationController:
         fused_pos = self.robot.get_fused_position()
         odom_pos = self.robot.odometry_position
         
+        # 获取定位系统位置
+        localization_pos = None
+        if hasattr(self.robot, 'localization_position'):
+            with self.robot.localization_lock:
+                localization_pos = self.robot.localization_position.copy()
+        
         print(f"\n{'='*60}")
-        print(f"📍 Fused Position: x={fused_pos[0]:.2f}, y={fused_pos[1]:.2f}, yaw={np.degrees(fused_pos[2]):.1f}°")
-        print(f"📊 Odometry: x={odom_pos[0]:.2f}, y={odom_pos[1]:.2f}, yaw={np.degrees(odom_pos[2]):.1f}°")
+        print(f"📍 Fused Position (ROS定位): x={fused_pos[0]:.2f}, y={fused_pos[1]:.2f}, yaw={np.degrees(fused_pos[2]):.1f}°")
+        if localization_pos is not None:
+            print(f"📍 Localization (AMCL/Odom): x={localization_pos[0]:.2f}, y={localization_pos[1]:.2f}, yaw={np.degrees(localization_pos[2]):.1f}°")
+        print(f"📊 Odometry (SDK): x={odom_pos[0]:.2f}, y={odom_pos[1]:.2f}, yaw={np.degrees(odom_pos[2]):.1f}°")
         print(f"🏃 Velocity: vx={state.vel_x:.2f}, vy={state.vel_y:.2f}, vz={state.vel_z:.2f}")
         print(f"🔄 Ang Vel: wx={state.omega_x:.2f}, wy={state.omega_y:.2f}, wz={state.omega_z:.2f}")
         
-        if self.current_goal is not None:
+        # 检查goal（优先从rviz获取）
+        goal = None
+        if hasattr(self.robot, 'current_goal') and self.robot.current_goal is not None:
+            with self.robot.goal_lock:
+                goal = self.robot.current_goal
+        elif self.current_goal is not None:
+            goal = self.current_goal
+        
+        if goal is not None:
             relative_goal = self._compute_relative_goal(state)
             distance = np.linalg.norm(relative_goal[:2])
-            print(f"🎯 Goal: x={self.current_goal.x:.2f}, y={self.current_goal.y:.2f}, yaw={np.degrees(self.current_goal.yaw):.1f}°")
+            print(f"🎯 Goal (Map frame): x={goal.x:.2f}, y={goal.y:.2f}, yaw={np.degrees(goal.yaw):.1f}°")
             print(f"📏 Distance to goal: {distance:.2f}m")
-            print(f"🔺 Relative: dx={relative_goal[0]:.2f}, dy={relative_goal[1]:.2f}, dyaw={np.degrees(relative_goal[2]):.1f}°")
+            print(f"🔺 Relative (Base frame): dx={relative_goal[0]:.2f}, dy={relative_goal[1]:.2f}, dyaw={np.degrees(relative_goal[2]):.1f}°")
         else:
-            print(f"🎯 Goal: None")
+            print(f"🎯 Goal: None (等待RViz 2D Nav Goal或手动设置)")
         
         print(f"📡 Lidar: {'Enabled (/lidar_projected, 359 dims)' if self.robot.use_lidar else 'Disabled'}")
         print(f"{'='*60}\n")
@@ -817,89 +1011,113 @@ def main():
         # Start controller
         controller.start()
         
-        print("\n📝 Manual Goal Input Mode")
-        print("Enter goal coordinates in world frame (relative to start position)")
-        print("Format: x y yaw")
-        print("Example: 5.0 2.0 1.57  (go to x=5m, y=2m, yaw=90°)")
-        print("Type 'q' to quit\n")
+        print("\n📝 Goal Input Mode")
+        print("方式1: 在RViz中使用'2D Nav Goal'工具设置目标点（推荐）")
+        print("方式2: 手动输入目标坐标 (格式: x y yaw)")
+        print("命令: 'status' 查看状态, 'q' 退出\n")
         
         dt = 1.0 / args.rate
+        last_goal_check_time = time.time()
+        navigating = False
         
         while True:
-            # Check for new goal input
-            print("\n🎯 Enter goal (x y yaw) or 'status' or 'q': ", end='', flush=True)
+            # 检查是否有goal（从rviz或手动设置）
+            goal = None
+            if hasattr(controller.robot, 'current_goal') and controller.robot.current_goal is not None:
+                with controller.robot.goal_lock:
+                    goal = controller.robot.current_goal
+            elif controller.current_goal is not None:
+                goal = controller.current_goal
             
-            goal_set = controller.current_goal is not None
+            # 如果有goal且不在导航中，开始导航
+            if goal is not None and not navigating:
+                print("\n🚀 开始导航到目标点...")
+                print("在RViz中设置新的2D Nav Goal可以更新目标")
+                print("按 Ctrl+C 停止导航\n")
+                navigating = True
+                last_goal_check_time = time.time()
             
-            if not goal_set:
-                # Wait for goal input
-                user_input = input().strip()
-                if user_input.lower() == 'q':
-                    break
-                elif user_input.lower() == 'status':
-                    controller.print_status()
-                    continue
-                
+            # 如果正在导航，执行控制循环
+            if navigating and goal is not None:
                 try:
-                    parts = user_input.split()
-                    if len(parts) == 3:
-                        x, y, yaw = map(float, parts)
-                        controller.set_goal(x, y, yaw)
-                    else:
-                        print("❌ Invalid input. Use: x y yaw")
+                    # 检查是否到达目标
+                    if controller.check_goal_reached(args.goal_threshold):
+                        print("\n✅ 目标已到达!")
+                        controller.robot.send_velocity_command(0.0, 0.0, 0.0)
+                        # 清除goal
+                        if hasattr(controller.robot, 'current_goal'):
+                            with controller.robot.goal_lock:
+                                controller.robot.current_goal = None
+                        controller.current_goal = None
+                        navigating = False
+                        controller.print_status()
                         continue
-                except ValueError:
-                    print("❌ Invalid numbers")
-                    continue
-            
-            # Execute navigation
-            print("\n🚀 Navigating to goal...")
-            print("Press Ctrl+C to stop and set new goal\n")
-            
-            try:
-                while not controller.check_goal_reached(args.goal_threshold):
-                    # Control step
+                    
+                    # 执行控制步骤
                     vx, vy, vyaw = controller.step()
                     
-                    # Get current distance to goal
-                    if controller.current_goal is not None:
+                    # 定期打印状态
+                    current_time = time.time()
+                    if current_time - last_goal_check_time >= 2.0:  # 每2秒打印一次
                         state = controller.robot.get_state()
                         relative_goal = controller._compute_relative_goal(state)
                         distance_to_goal = np.linalg.norm(relative_goal[:2])
+                        fused_pos = controller.robot.get_fused_position()
                         
-                        # Print status every 2 seconds
-                        if int(time.time() * args.rate) % (int(args.rate) * 2) == 0:
-                            fused_pos = controller.robot.get_fused_position()
-                            print(f"⚡ Command: vx={vx:.2f}, vy={vy:.2f}, vyaw={vyaw:.2f}")
-                            print(f"📍 Position: x={fused_pos[0]:.2f}, y={fused_pos[1]:.2f}, yaw={np.degrees(fused_pos[2]):.1f}°")
-                            print(f"📏 Distance to goal: {distance_to_goal:.2f}m")
-                            
-                            # Progress bar
-                            max_distance = 10.0
-                            progress = max(0, min(1.0, 1.0 - distance_to_goal / max_distance))
-                            bar_length = 20
-                            filled_length = int(bar_length * progress)
-                            bar = "█" * filled_length + "░" * (bar_length - filled_length)
-                            print(f"📊 Progress: [{bar}] {progress*100:.1f}%")
-                            
-                            # Print lidar data every 1 second
-                            if int(time.time()) % 1 == 0:
-                                lidar_data = controller.get_lidar_projected(state)
-                                controller.print_lidar_8_directions(lidar_data)
+                        print(f"⚡ 速度命令: vx={vx:.2f}, vy={vy:.2f}, vyaw={vyaw:.2f}")
+                        print(f"📍 当前位置 (地图坐标系): x={fused_pos[0]:.2f}, y={fused_pos[1]:.2f}, yaw={np.degrees(fused_pos[2]):.1f}°")
+                        print(f"📏 到目标距离: {distance_to_goal:.2f}m")
+                        print(f"🔺 相对目标 (本体坐标系): dx={relative_goal[0]:.2f}, dy={relative_goal[1]:.2f}, dyaw={np.degrees(relative_goal[2]):.1f}°")
+                        
+                        # 进度条
+                        max_distance = 10.0
+                        progress = max(0, min(1.0, 1.0 - distance_to_goal / max_distance))
+                        bar_length = 20
+                        filled_length = int(bar_length * progress)
+                        bar = "█" * filled_length + "░" * (bar_length - filled_length)
+                        print(f"📊 进度: [{bar}] {progress*100:.1f}%\n")
+                        
+                        last_goal_check_time = current_time
                     
                     time.sleep(dt)
+                    
+                except KeyboardInterrupt:
+                    print("\n⏸️  导航已中断")
+                    controller.robot.send_velocity_command(0.0, 0.0, 0.0)
+                    navigating = False
+                    # 不清除goal，允许继续导航
+                    continue
+            else:
+                # 没有goal，等待用户输入或rviz goal
+                # 使用非阻塞方式检查用户输入
+                import select
+                import sys
                 
-                # Goal reached
-                print("\n✅ Goal reached!")
-                controller.robot.send_velocity_command(0.0, 0.0, 0.0)
-                controller.current_goal = None
-                controller.print_status()
-                
-            except KeyboardInterrupt:
-                print("\n⏸️  Navigation interrupted")
-                controller.robot.send_velocity_command(0.0, 0.0, 0.0)
-                controller.current_goal = None
-                continue
+                if sys.stdin.isatty():  # 只在终端模式下检查输入
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        user_input = input().strip()
+                        if user_input.lower() == 'q':
+                            break
+                        elif user_input.lower() == 'status':
+                            controller.print_status()
+                            continue
+                        elif user_input.lower().startswith('goal') or len(user_input.split()) == 3:
+                            try:
+                                parts = user_input.split()
+                                if len(parts) == 3:
+                                    x, y, yaw = map(float, parts)
+                                    controller.set_goal(x, y, yaw)
+                                    navigating = True
+                                    print(f"✅ 手动设置目标: x={x:.2f}, y={y:.2f}, yaw={np.degrees(yaw):.1f}°")
+                                else:
+                                    print("❌ 无效输入。格式: x y yaw")
+                            except ValueError:
+                                print("❌ 无效数字")
+                        else:
+                            print("❌ 未知命令。使用 'status' 查看状态, 'q' 退出, 或输入 'x y yaw' 设置目标")
+                else:
+                    # 非终端模式，只等待rviz goal
+                    time.sleep(0.5)
     
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down...")
